@@ -225,10 +225,10 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* 2. 비서업무 (구 "최근 대화 기록") */}
+        {/* 2. Work */}
         <div className="space-y-1 pt-1 border-t border-[#E6ECF3]">
           <p className="px-3 pt-2 text-[11px] font-bold text-[#5F6368] tracking-wide mb-1">
-            2. 비서업무
+            2. Work
           </p>
 
           {/* a. 새로운 대화 (및 생성된 주제 대화 목록) */}
