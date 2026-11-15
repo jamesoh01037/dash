@@ -1,0 +1,31 @@
+services:
+  junior:
+    build: .
+    container_name: junior-app
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: junior-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - JUNIOR_DOMAIN=${JUNIOR_DOMAIN:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - junior
+
+volumes:
+  caddy_data:
+  caddy_config:

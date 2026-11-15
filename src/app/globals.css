@@ -1,0 +1,310 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f8fafd;
+  --foreground: #1f1f1f;
+  --card: #ffffff;
+  --card-foreground: #1f1f1f;
+  --border: #dfe3eb;
+  --muted: #f0f4f9;
+  --muted-foreground: #444746;
+  --primary: #1a73e8;
+  --primary-foreground: #ffffff;
+  --sidebar: #f8fafd;
+  --sidebar-border: #e1e5ea;
+  --google-blue: #4285f4;
+  --google-red: #ea4335;
+  --google-yellow: #fbbc05;
+  --google-green: #34a853;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: "Google Sans", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Noto Sans KR", "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Google Workspace Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(68, 71, 70, 0.22);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(68, 71, 70, 0.38);
+}
+
+/* =========================================================================
+   Google Material 3 / Workspace Theme Adaptation Layer
+   Transforms legacy dark-slate surfaces into clean Google Workspace surfaces
+   ========================================================================= */
+
+/* 1. Surfaces & Backgrounds */
+.google-theme .bg-slate-950,
+.google-theme .bg-slate-950\/40,
+.google-theme .bg-slate-950\/60,
+.google-theme .bg-slate-950\/70,
+.google-theme .bg-slate-950\/80,
+.google-theme .bg-slate-950\/90 {
+  background-color: #f8fafd !important;
+}
+
+.google-theme .bg-slate-900,
+.google-theme .bg-slate-900\/30,
+.google-theme .bg-slate-900\/40,
+.google-theme .bg-slate-900\/50,
+.google-theme .bg-slate-900\/60,
+.google-theme .bg-slate-900\/70,
+.google-theme .bg-slate-900\/80,
+.google-theme .bg-slate-900\/90,
+.google-theme .bg-slate-900\/95 {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.06), 0 1px 3px 1px rgba(60, 64, 67, 0.04);
+}
+
+.google-theme .bg-slate-800,
+.google-theme .bg-slate-800\/40,
+.google-theme .bg-slate-800\/60,
+.google-theme .bg-slate-800\/80,
+.google-theme .bg-slate-800\/90 {
+  background-color: #eef3fc !important;
+}
+
+.google-theme .hover\:bg-slate-900:hover,
+.google-theme .hover\:bg-slate-900\/60:hover,
+.google-theme .hover\:bg-slate-900\/70:hover,
+.google-theme .hover\:bg-slate-800:hover,
+.google-theme .hover\:bg-slate-800\/60:hover,
+.google-theme .hover\:bg-slate-800\/80:hover,
+.google-theme .hover\:bg-slate-700:hover {
+  background-color: #e2ecfc !important;
+}
+
+/* Remove dark gradient backgrounds on info boxes — clean white card with no color */
+.google-theme [class*="from-slate-900"],
+.google-theme [class*="via-slate-900"],
+.google-theme [class*="to-slate-900"],
+.google-theme [class*="from-purple-950"],
+.google-theme [class*="from-rose-950"],
+.google-theme [class*="from-indigo-950"],
+.google-theme [class*="from-cyan-950"],
+.google-theme [class*="from-sky-950"],
+.google-theme [class*="from-amber-950"] {
+  background-image: none !important;
+  background-color: #ffffff !important;
+  border-color: #dde3ea !important;
+}
+
+/* Tint containers */
+.google-theme [class*="bg-emerald-950"] {
+  background-color: #f1fbf4 !important;
+}
+.google-theme [class*="bg-cyan-950"],
+.google-theme [class*="bg-sky-950"],
+.google-theme [class*="bg-indigo-950"],
+.google-theme [class*="bg-junior-950"] {
+  background-color: #f0f6ff !important;
+}
+.google-theme [class*="bg-amber-950"] {
+  background-color: #fffbf0 !important;
+}
+.google-theme [class*="bg-rose-950"] {
+  background-color: #fff5f5 !important;
+}
+
+/* 2. Borders & Dividers */
+.google-theme .border-slate-800,
+.google-theme .border-slate-800\/40,
+.google-theme .border-slate-800\/60,
+.google-theme .border-slate-800\/70,
+.google-theme .border-slate-800\/80,
+.google-theme .border-slate-800\/90,
+.google-theme .border-slate-700,
+.google-theme .border-slate-700\/50,
+.google-theme .border-slate-700\/60 {
+  border-color: #dde3ea !important;
+}
+
+.google-theme .divide-slate-800\/40 > :not([hidden]) ~ :not([hidden]),
+.google-theme .divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e6ebf2 !important;
+}
+
+/* 3. Typography & High-Contrast Google Text Colors */
+.google-theme .text-slate-100,
+.google-theme .text-slate-200 {
+  color: #1f1f1f !important;
+}
+
+.google-theme .text-slate-300 {
+  color: #3c4043 !important;
+}
+
+.google-theme .text-slate-400 {
+  color: #5f6368 !important;
+}
+
+.google-theme .text-slate-500,
+.google-theme .text-slate-600 {
+  color: #70757a !important;
+}
+
+/* Keep white text on solid buttons, otherwise map light text to dark when background is converted to light */
+.google-theme .bg-slate-800.text-white,
+.google-theme .bg-slate-900.text-white {
+  background-color: #d3e3fd !important;
+  color: #041e49 !important;
+}
+
+/* Semantic Google Colors (Blue, Red, Yellow/Amber, Green, Indigo, Purple) */
+.google-theme .text-junior-400,
+.google-theme .text-junior-300,
+.google-theme .text-blue-400,
+.google-theme .text-blue-300,
+.google-theme .text-sky-400,
+.google-theme .text-sky-300,
+.google-theme .text-sky-200,
+.google-theme .text-cyan-400,
+.google-theme .text-cyan-300,
+.google-theme .text-cyan-200,
+.google-theme .text-indigo-400,
+.google-theme .text-indigo-300,
+.google-theme .text-indigo-200 {
+  color: #0b57d0 !important;
+}
+
+.google-theme .text-emerald-400,
+.google-theme .text-emerald-300,
+.google-theme .text-emerald-200 {
+  color: #137333 !important;
+}
+
+.google-theme .text-rose-400,
+.google-theme .text-rose-300,
+.google-theme .text-rose-200 {
+  color: #c5221f !important;
+}
+
+.google-theme .text-amber-400,
+.google-theme .text-amber-300,
+.google-theme .text-amber-200,
+.google-theme .text-amber-100 {
+  color: #b06000 !important;
+}
+
+.google-theme .text-purple-400,
+.google-theme .text-purple-300,
+.google-theme .text-purple-200,
+.google-theme [class*="text-purple-300/"],
+.google-theme [class*="text-purple-200/"] {
+  color: #3c4043 !important;
+}
+
+/* Soft Google Pill Backgrounds */
+.google-theme [class*="bg-emerald-500/1"],
+.google-theme [class*="bg-emerald-500/2"] {
+  background-color: #e6f4ea !important;
+  border-color: #ceead6 !important;
+}
+
+.google-theme [class*="bg-rose-500/1"],
+.google-theme [class*="bg-rose-500/2"] {
+  background-color: #fce8e6 !important;
+  border-color: #fad2cf !important;
+}
+
+.google-theme [class*="bg-amber-500/1"],
+.google-theme [class*="bg-amber-500/2"] {
+  background-color: #fef7e0 !important;
+  border-color: #feefc3 !important;
+}
+
+.google-theme [class*="bg-cyan-500/1"],
+.google-theme [class*="bg-cyan-500/2"],
+.google-theme [class*="bg-sky-500/1"],
+.google-theme [class*="bg-sky-500/2"],
+.google-theme [class*="bg-blue-500/1"],
+.google-theme [class*="bg-blue-500/2"],
+.google-theme [class*="bg-indigo-500/1"],
+.google-theme [class*="bg-indigo-500/2"],
+.google-theme [class*="bg-junior-500/1"],
+.google-theme [class*="bg-junior-500/2"],
+.google-theme [class*="bg-junior-600/1"] {
+  background-color: #e8f0fe !important;
+  border-color: #d2e3fc !important;
+}
+
+.google-theme [class*="bg-purple-500/1"],
+.google-theme [class*="bg-purple-500/2"] {
+  background-color: #f3e8fd !important;
+  border-color: #e9d2fd !important;
+}
+
+/* 4. Markdown Prose in Google Workspace Light Style */
+.google-theme .prose-invert {
+  --tw-prose-body: #1f1f1f !important;
+  --tw-prose-headings: #1f1f1f !important;
+  --tw-prose-lead: #444746 !important;
+  --tw-prose-links: #0b57d0 !important;
+  --tw-prose-bold: #1f1f1f !important;
+  --tw-prose-counters: #444746 !important;
+  --tw-prose-bullets: #1a73e8 !important;
+  --tw-prose-hr: #e1e5ea !important;
+  --tw-prose-quotes: #3c4043 !important;
+  --tw-prose-quote-borders: #1a73e8 !important;
+  --tw-prose-captions: #5f6368 !important;
+  --tw-prose-code: #0b57d0 !important;
+  --tw-prose-pre-code: #1f1f1f !important;
+  --tw-prose-pre-bg: #f1f5f9 !important;
+  --tw-prose-th-borders: #dadce0 !important;
+  --tw-prose-td-borders: #e8eaed !important;
+  color: #1f1f1f !important;
+}
+
+.prose pre {
+  background-color: #f1f5f9 !important;
+  border: 1px solid #dadce0;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  color: #1f1f1f !important;
+}
+
+.prose code {
+  color: #0b57d0;
+  background-color: #e8f0fe;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.35rem;
+  font-size: 0.875em;
+  font-weight: 500;
+}
+
+.prose pre code {
+  color: #1f1f1f;
+  background-color: transparent;
+  padding: 0;
+}
+
+/* 5. Inputs, Selects, Textareas in Google Material Style */
+.google-theme input,
+.google-theme select,
+.google-theme textarea {
+  color: #1f1f1f !important;
+}
+
+.google-theme input::placeholder,
+.google-theme textarea::placeholder {
+  color: #747775 !important;
+}

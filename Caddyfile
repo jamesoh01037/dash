@@ -1,0 +1,4 @@
+{$JUNIOR_DOMAIN:localhost} {
+    encode gzip
+    reverse_proxy junior:3000
+}
