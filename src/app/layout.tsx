@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Junior - 나만의 퍼스널 AI 에이전트",
+  title: "Dash - 나만의 퍼스널 AI 에이전트",
   description: "Google Workspace 연동형 개인 전담 AI 비서 Junior",
 };
 

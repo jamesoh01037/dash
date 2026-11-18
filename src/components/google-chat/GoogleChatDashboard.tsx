@@ -28,6 +28,7 @@ import {
   Copy,
 } from "lucide-react";
 import { GoogleChatSpace, GoogleChatMessageLog, GoogleChatMember } from "@/lib/db";
+import { withGoogleAuthUser } from "@/lib/utils";
 
 interface AuthStatus {
   authMode: "oauth2" | "service_account" | "token" | "webhook";
@@ -691,7 +692,7 @@ export default function GoogleChatDashboard({
                 Google Chat 스페이스 & DM 탐색기
               </h4>
               <a
-                href="https://chat.google.com"
+                href={withGoogleAuthUser("https://chat.google.com", authStatus?.connectedEmail)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"

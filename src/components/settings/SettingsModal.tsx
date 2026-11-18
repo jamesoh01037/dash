@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { X, Key, Cpu, User, ExternalLink, Check, Save } from "lucide-react";
+import { X, Key, Cpu, User, ExternalLink, Check, Save, Mail } from "lucide-react";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -13,8 +13,11 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gemini-3.8-flash");
   const [userName, setUserName] = useState("사용자");
-  const [googleClientId, setGoogleClientId] = useState("");
-  const [googleClientSecret, setGoogleClientSecret] = useState("");
+  const [assistantName, setAssistantName] = useState("Junior");
+  const [emailCheckCount, setEmailCheckCount] = useState<number>(20);
+  const [emailCheckScope, setEmailCheckScope] = useState<"all_except_spam" | "inbox_only">(
+    "all_except_spam"
+  );
   const [hasEnvKey, setHasEnvKey] = useState(false);
   const [maskedKey, setMaskedKey] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -33,8 +36,9 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
         const data = await res.json();
         setModel(data.settings?.model || "gemini-3.8-flash");
         setUserName(data.settings?.userName || "사용자");
-        setGoogleClientId(data.settings?.googleClientId || "");
-        setGoogleClientSecret(data.settings?.googleClientSecret || "");
+        setAssistantName(data.settings?.assistantName || "Junior");
+        setEmailCheckCount(data.settings?.emailCheckCount || 20);
+        setEmailCheckScope(data.settings?.emailCheckScope || "all_except_spam");
         setHasEnvKey(data.hasEnvKey);
         setMaskedKey(data.settings?.apiKey || "");
       }
@@ -54,8 +58,9 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
           apiKey: apiKey.trim() || undefined,
           model,
           userName: userName.trim(),
-          googleClientId: googleClientId.trim() || undefined,
-          googleClientSecret: googleClientSecret.trim() || undefined,
+          assistantName: assistantName.trim() || "Junior",
+          emailCheckCount,
+          emailCheckScope,
         }),
       });
 
@@ -85,7 +90,7 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
             <div className="p-2 bg-junior-500/10 text-junior-400 rounded-lg">
               <Cpu className="w-5 h-5" />
             </div>
-            <h2 className="text-base font-bold text-slate-100">Junior 환경 설정</h2>
+            <h2 className="text-base font-bold text-slate-100">Dash 환경 설정</h2>
           </div>
           <button
             onClick={onClose}
@@ -141,57 +146,68 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
             </select>
           </div>
 
-          {/* Google OAuth Credentials */}
-          <div className="pt-2 border-t border-slate-800/80 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-rose-300 flex items-center gap-1.5">
-                Google OAuth 2.0 (Gmail 연동)
-              </label>
-              <a
-                href="https://console.cloud.google.com/apis/credentials"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-junior-400 hover:underline flex items-center gap-1"
-              >
-                콘솔 이동 <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-
+          {/* User Name & AI Assistant Name */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-[11px] text-slate-400">Google Client ID</label>
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-junior-400" /> 당신의 이름 (호칭)
+              </label>
               <input
                 type="text"
-                value={googleClientId}
-                onChange={(e) => setGoogleClientId(e.target.value)}
-                placeholder="xxxx.apps.googleusercontent.com"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-rose-500 font-mono"
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder="이름을 입력하세요"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-junior-500"
               />
             </div>
-
             <div className="space-y-1.5">
-              <label className="text-[11px] text-slate-400">Google Client Secret</label>
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-junior-400" /> AI 비서 이름
+              </label>
               <input
-                type="password"
-                value={googleClientSecret}
-                onChange={(e) => setGoogleClientSecret(e.target.value)}
-                placeholder="GOCSPX-xxxx"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-rose-500 font-mono"
+                type="text"
+                value={assistantName}
+                onChange={(e) => setAssistantName(e.target.value)}
+                placeholder="예: Junior"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-junior-500"
               />
             </div>
           </div>
 
-          {/* User Name */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-junior-400" /> 사용자 호칭 (이름)
-            </label>
-            <input
-              type="text"
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              placeholder="이름을 입력하세요 (예: 홍길동)"
-              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-junior-500"
-            />
+          {/* Email Check Settings */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-800/70">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-junior-400" /> 메일 체크 조회 수
+              </label>
+              <select
+                value={emailCheckCount}
+                onChange={(e) => setEmailCheckCount(Number(e.target.value))}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-junior-500"
+              >
+                <option value={5}>최근 5건</option>
+                <option value={10}>최근 10건</option>
+                <option value={20}>최근 20건 (기본)</option>
+                <option value={30}>최근 30건</option>
+                <option value={50}>최근 50건</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-junior-400" /> 대상 메일박스
+              </label>
+              <select
+                value={emailCheckScope}
+                onChange={(e) =>
+                  setEmailCheckScope(e.target.value as "all_except_spam" | "inbox_only")
+                }
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-junior-500"
+              >
+                <option value="all_except_spam">스팸 제외 전체 메일박스 (기본)</option>
+                <option value="inbox_only">받은편지함(INBOX)만</option>
+              </select>
+            </div>
           </div>
 
           {/* Footer Actions */}

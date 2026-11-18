@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { TodoItem, CalendarEventItem } from "@/lib/db";
+import { withGoogleAuthUser } from "@/lib/utils";
 import {
   CheckSquare,
   Plus,
@@ -12,20 +13,30 @@ import {
   Sparkles,
   ExternalLink,
   FolderKanban,
+  Loader2,
+  X,
 } from "lucide-react";
 
 interface TodoDashboardProps {
+  userName?: string;
+  assistantName?: string;
+  authEmail?: string;
   onRefreshTrigger?: () => void;
 }
 
-export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) {
+export default function TodoDashboard({
+  userName = "사용자",
+  assistantName = "Junior",
+  authEmail,
+  onRefreshTrigger,
+}: TodoDashboardProps) {
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventItem[]>([]);
-  const [selectedList, setSelectedList] = useState<string>("Junior");
+  const [selectedList, setSelectedList] = useState<string>("ALL");
   const [filter, setFilter] = useState<"all" | "pending" | "completed">("all");
   const [newTitle, setNewTitle] = useState("");
   const [newItemType, setNewItemType] = useState<"todo" | "schedule">("todo");
-  const [newListName, setNewListName] = useState<string>("Junior");
+  const [newListName, setNewListName] = useState<string>(assistantName);
   const [newPriority, setNewPriority] = useState<"low" | "medium" | "high">("medium");
   const [newDueDate, setNewDueDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -33,6 +44,33 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
   const [selectedTodoIds, setSelectedTodoIds] = useState<string[]>([]);
   const [isBulkDeletingEvents, setIsBulkDeletingEvents] = useState(false);
   const [isBulkDeletingTodos, setIsBulkDeletingTodos] = useState(false);
+  const [registeringTodoIds, setRegisteringTodoIds] = useState<string[]>([]);
+  const [registeringEventIds, setRegisteringEventIds] = useState<string[]>([]);
+  const [actionNotice, setActionNotice] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<
+    | {
+        type: "calendar";
+        ev: CalendarEventItem;
+        title: string;
+        date: string;
+        startClock: string;
+        endClock: string;
+        location: string;
+        description: string;
+      }
+    | {
+        type: "task";
+        todo: TodoItem;
+        title: string;
+        dueDate: string;
+        description: string;
+      }
+    | null
+  >(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   const fetchTodos = async () => {
     try {
@@ -90,6 +128,171 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
     } catch (err) {
       console.error("Failed to delete schedule:", err);
       fetchTodos();
+    }
+  };
+
+  const openTaskConfirmDialog = (todo: TodoItem) => {
+    setDialogError(null);
+    const hasConfirmedDue =
+      todo.dueDate &&
+      !todo.dueDate.includes("일정 확인 필요") &&
+      !todo.dueDate.includes("일정 미정");
+    setConfirmDialog({
+      type: "task",
+      todo,
+      title: todo.title,
+      dueDate: hasConfirmedDue ? todo.dueDate || "" : "",
+      description: todo.description || "",
+    });
+  };
+
+  const openCalendarConfirmDialog = (ev: CalendarEventItem) => {
+    setDialogError(null);
+    const cleanSourceTitle =
+      (ev.sourceDocName || "")
+        .replace(/^\[(Mail|Drive|메일)\]\s*/i, "")
+        .trim() || ev.title;
+    const hasConfirmedTime =
+      ev.startTime &&
+      !ev.startTime.includes("일정 확인 필요") &&
+      !ev.startTime.includes("일정 미정");
+    const rawTimeSource = hasConfirmedTime
+      ? `${ev.startTime} ${ev.title}`
+      : `${ev.title} ${ev.description || ""}`;
+
+    const dateMatch = rawTimeSource.match(
+      /(\d{4})[-./년\s]*(\d{1,2})[-./월\s]*(\d{1,2})/
+    );
+    const parsedDate = dateMatch
+      ? `${dateMatch[1]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[3].padStart(2, "0")}`
+      : "";
+
+    const rangeMatch = rawTimeSource.match(
+      /(\d{1,2}):(\d{2})\s*[~\-–]\s*(\d{1,2}):(\d{2})/
+    );
+    const singleTimeMatch = !rangeMatch
+      ? rawTimeSource.match(/(\d{1,2}):(\d{2})/)
+      : null;
+
+    let parsedStartClock = "";
+    let parsedEndClock = "";
+    if (rangeMatch) {
+      parsedStartClock = `${rangeMatch[1].padStart(2, "0")}:${rangeMatch[2].padStart(2, "0")}`;
+      parsedEndClock = `${rangeMatch[3].padStart(2, "0")}:${rangeMatch[4].padStart(2, "0")}`;
+    } else if (singleTimeMatch) {
+      const sH = Number(singleTimeMatch[1]);
+      const sM = singleTimeMatch[2].padStart(2, "0");
+      parsedStartClock = `${String(sH).padStart(2, "0")}:${sM}`;
+      parsedEndClock = `${String(Math.min(23, sH + 1)).padStart(2, "0")}:${sM}`;
+    }
+
+    setConfirmDialog({
+      type: "calendar",
+      ev,
+      title: cleanSourceTitle,
+      date: parsedDate,
+      startClock: parsedStartClock,
+      endClock: parsedEndClock,
+      location: ev.location || "",
+      description:
+        ev.description ||
+        (ev.sourceDocName ? `출처: ${ev.sourceDocName}` : ""),
+    });
+  };
+
+  const handleConfirmSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!confirmDialog) return;
+
+    if (confirmDialog.type === "task") {
+      const { todo, title, dueDate, description } = confirmDialog;
+      if (registeringTodoIds.includes(todo.id)) return;
+      setRegisteringTodoIds((prev) => [...prev, todo.id]);
+      setDialogError(null);
+      setActionNotice(null);
+      try {
+        const res = await fetch("/api/todos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "register_google_task",
+            id: todo.id,
+            title,
+            dueDate,
+            description,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setDialogError(data.error || "Google Tasks 등록에 실패했습니다.");
+          return;
+        }
+        if (data.todo) {
+          setTodos((prev) => prev.map((t) => (t.id === todo.id ? data.todo : t)));
+        }
+        setActionNotice({
+          type: "success",
+          text: `Google Tasks '${data.listName || assistantName}' 목록에 "${title}" 할 일이 등록되었습니다.`,
+        });
+        setConfirmDialog(null);
+        onRefreshTrigger?.();
+      } catch (err) {
+        console.error("Failed to register Google Task:", err);
+        setDialogError("Google Tasks 등록 중 네트워크 오류가 발생했습니다.");
+      } finally {
+        setRegisteringTodoIds((prev) => prev.filter((item) => item !== todo.id));
+      }
+      return;
+    }
+
+    const { ev, title, date, startClock, endClock, location, description } = confirmDialog;
+    const combinedStartTime = [
+      date,
+      startClock && endClock
+        ? `${startClock}~${endClock}`
+        : startClock || endClock,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    if (registeringEventIds.includes(ev.id)) return;
+    setRegisteringEventIds((prev) => [...prev, ev.id]);
+    setDialogError(null);
+    setActionNotice(null);
+    try {
+      const res = await fetch("/api/todos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register_google_calendar",
+          id: ev.id,
+          title,
+          startTime: combinedStartTime || ev.startTime,
+          location,
+          description,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDialogError(data.error || "Google Calendar 등록에 실패했습니다.");
+        return;
+      }
+      if (data.calendarEvent) {
+        setCalendarEvents((prev) =>
+          prev.map((item) => (item.id === ev.id ? data.calendarEvent : item))
+        );
+      }
+      setActionNotice({
+        type: "success",
+        text: `Google Calendar '${data.listName || assistantName}' 캘린더에 "${title}" 일정이 등록되었습니다.`,
+      });
+      setConfirmDialog(null);
+      onRefreshTrigger?.();
+    } catch (err) {
+      console.error("Failed to register Google Calendar event:", err);
+      setDialogError("Google Calendar 등록 중 네트워크 오류가 발생했습니다.");
+    } finally {
+      setRegisteringEventIds((prev) => prev.filter((item) => item !== ev.id));
     }
   };
 
@@ -202,12 +405,14 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
   };
 
   const listFilteredTodos = todos.filter((t) => {
+    if (t.googleTaskId || t.googleTaskSyncedAt) return false;
     const itemList = t.listName || "Junior";
     if (selectedList === "ALL") return true;
     return itemList.toLowerCase() === selectedList.toLowerCase();
   });
 
   const listFilteredEvents = calendarEvents.filter((e) => {
+    if (e.googleCalendarSyncedAt) return false;
     const itemList = e.listName || "Junior";
     if (selectedList === "ALL") return true;
     return itemList.toLowerCase() === selectedList.toLowerCase();
@@ -261,34 +466,15 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
             <FolderKanban className="w-5 h-5" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-slate-100">
-                할 일 & 일정 &ldquo;Junior&rdquo; 목록 관리
-              </h2>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-junior-500/15 text-junior-300 border border-junior-500/30 font-semibold flex items-center gap-1">
-                <Sparkles className="w-3 h-3" /> Junior 자동 등록 목록
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Junior가 등록하는 모든 할 일과 일정은 기본적으로 <strong>&ldquo;Junior&rdquo; 목록</strong>에 저장됩니다.
-            </p>
+            <h2 className="text-sm font-bold text-slate-100">
+              {userName}님의 할 일 & 일정 후보 목록 관리
+            </h2>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
           <button
-            onClick={() => setSelectedList("Junior")}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all flex items-center gap-1.5 ${
-              selectedList === "Junior"
-                ? "bg-junior-600 text-white border-junior-500 shadow-md shadow-junior-600/20"
-                : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            Junior 목록 (할일 {juniorTodoCount} · 일정 {juniorEventCount})
-          </button>
-          <button
-            onClick={() => setSelectedList("ALL")}
+            onClick={() => setSelectedList(selectedList === "ALL" ? assistantName : "ALL")}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
               selectedList === "ALL"
                 ? "bg-slate-800 text-white border-slate-700"
@@ -300,106 +486,24 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
         </div>
       </div>
 
-      {/* Top Banner / Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-slate-400">
-              {selectedList === "Junior" ? "Junior 목록 할 일" : "전체 할 일"}
-            </p>
-            <p className="text-2xl font-bold text-slate-100">{listFilteredTodos.length}</p>
-          </div>
-          <CheckSquare className="w-8 h-8 text-slate-700" />
-        </div>
-        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-slate-400">진행 중인 할 일</p>
-            <p className="text-2xl font-bold text-junior-400">{pendingCount}</p>
-          </div>
-          <Circle className="w-8 h-8 text-junior-500/30" />
-        </div>
-        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-slate-400">완료된 할 일</p>
-            <p className="text-2xl font-bold text-emerald-400">{completedCount}</p>
-          </div>
-          <CheckCircle2 className="w-8 h-8 text-emerald-500/30" />
-        </div>
-        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-slate-400">
-              {selectedList === "Junior" ? "Junior 목록 일정" : "전체 일정"}
-            </p>
-            <p className="text-2xl font-bold text-cyan-400">{listFilteredEvents.length}</p>
-          </div>
-          <Calendar className="w-8 h-8 text-cyan-500/30" />
-        </div>
-      </div>
-
-      {/* Quick Add Form */}
-      <form
-        onSubmit={handleAdd}
-        className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3"
-      >
-        <div className="flex flex-col sm:flex-row gap-2">
-          <select
-            value={newItemType}
-            onChange={(e) => setNewItemType(e.target.value as "todo" | "schedule")}
-            className="px-2.5 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-junior-500"
+      {actionNotice && (
+        <div
+          className={`px-4 py-3 rounded-xl border text-xs font-medium flex items-center justify-between gap-2 ${
+            actionNotice.type === "success"
+              ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+              : "bg-rose-500/10 border-rose-500/30 text-rose-300"
+          }`}
+        >
+          <span>{actionNotice.text}</span>
+          <button
+            type="button"
+            onClick={() => setActionNotice(null)}
+            className="text-[11px] opacity-75 hover:opacity-100 shrink-0"
           >
-            <option value="todo">📋 할 일 등록</option>
-            <option value="schedule">📅 일정 등록</option>
-          </select>
-
-          <select
-            value={newListName}
-            onChange={(e) => setNewListName(e.target.value)}
-            className="px-2.5 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-xs text-junior-300 font-semibold focus:outline-none focus:border-junior-500"
-          >
-            <option value="Junior">목록: Junior</option>
-            <option value="기본 목록">목록: 기본 목록</option>
-          </select>
-
-          <input
-            type="text"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder={
-              newItemType === "schedule"
-                ? `"${newListName}" 목록에 등록할 새로운 일정을 입력하세요...`
-                : `"${newListName}" 목록에 등록할 새로운 할 일을 입력하세요...`
-            }
-            className="flex-1 px-3 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-junior-500"
-          />
-          <div className="flex gap-2">
-            <select
-              value={newPriority}
-              onChange={(e) =>
-                setNewPriority(e.target.value as "low" | "medium" | "high")
-              }
-              className="px-2.5 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-junior-500"
-            >
-              <option value="high">우선순위: 높음</option>
-              <option value="medium">우선순위: 보통</option>
-              <option value="low">우선순위: 낮음</option>
-            </select>
-            <input
-              type="text"
-              value={newDueDate}
-              onChange={(e) => setNewDueDate(e.target.value)}
-              placeholder="기한/일시 (예: 2026-11-20 14:00)"
-              className="w-44 px-2.5 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-junior-500"
-            />
-            <button
-              type="submit"
-              disabled={!newTitle.trim() || isLoading}
-              className="px-4 py-2 bg-junior-600 hover:bg-junior-500 disabled:opacity-40 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0"
-            >
-              <Plus className="w-4 h-4" /> 추가
-            </button>
-          </div>
+            닫기
+          </button>
         </div>
-      </form>
+      )}
 
       {/* Section 1: Calendar Schedules in "Junior" List */}
       <div className="space-y-3">
@@ -407,7 +511,7 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-cyan-400" />
             <h3 className="text-xs font-bold text-slate-200">
-              일정 — &ldquo;{selectedList === "ALL" ? "전체" : selectedList}&rdquo; 목록 ({listFilteredEvents.length}건)
+              일정 후보 — {selectedList === "ALL" ? "전체 목록" : `${userName}님의 후보 목록`} ({listFilteredEvents.length}건)
             </h3>
           </div>
 
@@ -457,64 +561,98 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
 
         {listFilteredEvents.length === 0 ? (
           <div className="p-6 rounded-xl bg-slate-900/30 border border-slate-800/60 text-center text-slate-500 text-xs">
-            현재 &ldquo;{selectedList === "ALL" ? "전체" : selectedList}&rdquo; 목록에 등록된 일정이 없습니다.
+            등록된 후보 일정이 없습니다
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {listFilteredEvents.map((ev) => {
               const isEventSelected = selectedEventIds.includes(ev.id);
+              const hasConfirmedTime =
+                ev.startTime &&
+                !ev.startTime.includes("일정 확인 필요") &&
+                !ev.startTime.includes("일정 미정");
+              const sourceLabel = ev.sourceDocName
+                ? /^\[(Mail|Drive|메일)\]/i.test(ev.sourceDocName)
+                  ? ev.sourceDocName.replace(/^\[메일\]/i, "[Mail]")
+                  : `${ev.sourceDocId?.startsWith("gmail-") ? "[Mail]" : "[Drive]"} ${ev.sourceDocName}`
+                : undefined;
+
               return (
                 <div
                   key={ev.id}
-                  className={`group p-3.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
+                  className={`p-4 rounded-2xl border flex flex-col justify-between gap-3.5 shadow-sm transition-all ${
                     isEventSelected
                       ? "bg-slate-900/90 border-rose-500/50 ring-1 ring-rose-500/20"
                       : "bg-slate-900/60 border-cyan-500/25 hover:border-cyan-500/50"
                   }`}
                 >
-                  <div className="flex items-start gap-2.5 min-w-0">
-                    <input
-                      type="checkbox"
-                      checked={isEventSelected}
-                      onChange={() => handleToggleSelectEvent(ev.id)}
-                      className="mt-1 h-4 w-4 rounded border-slate-700 accent-[#1A73E8] cursor-pointer shrink-0"
-                      aria-label={`${ev.title} 선택`}
-                    />
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-semibold shrink-0">
-                          목록: {ev.listName || "Junior"}
-                        </span>
-                        <p className="text-xs font-bold text-slate-100 truncate">
-                          📅 {ev.title}
-                        </p>
+                  <div className="space-y-2.5">
+                    {/* Card Header: Checkbox + Time/Location + Delete */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isEventSelected}
+                          onChange={() => handleToggleSelectEvent(ev.id)}
+                          className="h-4 w-4 rounded border-slate-700 accent-[#1A73E8] cursor-pointer shrink-0"
+                          aria-label={`${ev.title} 선택`}
+                        />
+                        {hasConfirmedTime && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800/80 text-cyan-300 border border-slate-700/70 font-medium">
+                            일시: {ev.startTime}
+                          </span>
+                        )}
+                        {ev.location && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800/60 text-slate-300 border border-slate-700/60">
+                            장소: {ev.location}
+                          </span>
+                        )}
                       </div>
-                      <p className="text-[11px] text-cyan-300">일시: {ev.startTime}</p>
-                      {ev.description && (
-                        <p className="text-[11px] text-slate-400 truncate">
-                          {ev.description}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSchedule(ev.id)}
+                        className="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/25 text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                        title="일정 삭제"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        삭제
+                      </button>
+                    </div>
+
+                    {/* Card Body */}
+                    <div className="space-y-1">
+                      <p className="text-sm font-bold text-slate-100 break-words leading-snug">
+                        📅 {ev.title}
+                      </p>
+                      {sourceLabel && (
+                        <p className="text-[11px] font-medium text-slate-100 break-words">
+                          출처: {sourceLabel}
                         </p>
                       )}
+                      {ev.description &&
+                        !(sourceLabel && ev.description.trim().startsWith("출처:")) && (
+                          <p className="text-xs text-slate-400 break-words leading-relaxed">
+                            {ev.description}
+                          </p>
+                        )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {ev.googleCalendarLink && (
-                      <a
-                        href={ev.googleCalendarLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-2.5 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold flex items-center gap-1"
-                      >
-                        캘린더 <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
+                  {/* Card Footer */}
+                  <div className="pt-2.5 border-t border-slate-800/80 flex items-center justify-end gap-2">
                     <button
-                      onClick={() => handleDeleteSchedule(ev.id)}
-                      className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1.5 text-slate-500 hover:text-rose-400 transition-all rounded hover:bg-slate-800"
-                      title="일정 삭제"
+                      type="button"
+                      disabled={registeringEventIds.includes(ev.id)}
+                      onClick={() => openCalendarConfirmDialog(ev)}
+                      className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                      title={`Google Calendar '${assistantName}' 캘린더에 등록`}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {registeringEventIds.includes(ev.id) ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Calendar className="w-3.5 h-3.5" />
+                      )}
+                      캘린더 등록
                     </button>
                   </div>
                 </div>
@@ -526,46 +664,12 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
 
       {/* Section 2: To-Do List in "Junior" List */}
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <CheckSquare className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-xs font-bold text-slate-200">
-                할 일 — &ldquo;{selectedList === "ALL" ? "전체" : selectedList}&rdquo; 목록
-              </h3>
-            </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => setFilter("all")}
-                className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
-                  filter === "all"
-                    ? "bg-slate-800 text-white font-medium"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                전체 ({listFilteredTodos.length})
-              </button>
-              <button
-                onClick={() => setFilter("pending")}
-                className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
-                  filter === "pending"
-                    ? "bg-slate-800 text-white font-medium"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                진행 중 ({pendingCount})
-              </button>
-              <button
-                onClick={() => setFilter("completed")}
-                className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
-                  filter === "completed"
-                    ? "bg-slate-800 text-white font-medium"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                완료 ({completedCount})
-              </button>
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+          <div className="flex items-center gap-2">
+            <CheckSquare className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-xs font-bold text-slate-200">
+              할 일 후보 — {selectedList === "ALL" ? "전체 목록" : `${userName}님의 후보 목록`} ({filteredTodos.length}건)
+            </h3>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
@@ -627,18 +731,26 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
         </div>
 
         {/* Todo List */}
-        <div className="space-y-2">
-          {filteredTodos.length === 0 ? (
-            <div className="p-12 text-center text-slate-500 text-sm">
-              해당 목록에 표시할 할 일이 없습니다.
-            </div>
-          ) : (
-            filteredTodos.map((todo) => {
+        {filteredTodos.length === 0 ? (
+          <div className="p-6 rounded-xl bg-slate-900/30 border border-slate-800/60 text-center text-slate-500 text-xs">
+            등록된 후보 할 일이 없습니다
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {filteredTodos.map((todo) => {
               const isTodoSelected = selectedTodoIds.includes(todo.id);
+              const hasConfirmedDue =
+                todo.dueDate &&
+                !todo.dueDate.includes("일정 확인 필요") &&
+                !todo.dueDate.includes("일정 미정");
+              const formattedDescription = todo.description
+                ? todo.description.replace(/^\[메일\]/i, "[Mail]")
+                : undefined;
+
               return (
                 <div
                   key={todo.id}
-                  className={`group flex items-center justify-between p-3.5 rounded-xl border transition-all ${
+                  className={`flex flex-col justify-between gap-3.5 p-4 rounded-2xl border shadow-sm transition-all ${
                     isTodoSelected
                       ? "bg-slate-900/90 border-rose-500/50 ring-1 ring-rose-500/20"
                       : todo.completed
@@ -646,68 +758,299 @@ export default function TodoDashboard({ onRefreshTrigger }: TodoDashboardProps) 
                       : "bg-slate-900/50 border-slate-800 hover:border-slate-700"
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <input
-                      type="checkbox"
-                      checked={isTodoSelected}
-                      onChange={() => handleToggleSelectTodo(todo.id)}
-                      className="h-4 w-4 rounded border-slate-700 accent-[#1A73E8] cursor-pointer shrink-0"
-                      aria-label={`${todo.title} 선택`}
-                    />
-                    <button
-                      onClick={() => handleToggleComplete(todo)}
-                      className="text-slate-400 hover:text-emerald-400 transition-colors shrink-0"
-                    >
-                      {todo.completed ? (
-                        <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      ) : (
-                        <Circle className="w-5 h-5 text-slate-500 hover:text-slate-300" />
-                      )}
-                    </button>
-
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-junior-500/15 text-junior-300 border border-junior-500/30 font-semibold shrink-0">
-                          목록: {todo.listName || "Junior"}
-                        </span>
-                        <p
-                          className={`text-sm font-medium truncate ${
-                            todo.completed ? "line-through text-slate-500" : "text-slate-200"
-                          }`}
-                        >
-                          {todo.title}
-                        </p>
+                  <div className="space-y-2.5">
+                    {/* Card Header: Checkbox + Priority/Due + Delete */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isTodoSelected}
+                          onChange={() => handleToggleSelectTodo(todo.id)}
+                          className="h-4 w-4 rounded border-slate-700 accent-[#1A73E8] cursor-pointer shrink-0"
+                          aria-label={`${todo.title} 선택`}
+                        />
+                        {priorityBadge(todo.priority)}
+                        {hasConfirmedDue && (
+                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-slate-800/80 text-slate-300 border border-slate-700/70">
+                            <Calendar className="w-3 h-3 text-slate-400" />
+                            <span>{todo.dueDate}</span>
+                          </span>
+                        )}
                       </div>
-                      {todo.description && (
-                        <p className="text-xs text-slate-400 truncate mt-0.5">
-                          {todo.description}
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(todo.id)}
+                        className="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/25 text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                        title="삭제"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        삭제
+                      </button>
+                    </div>
+
+                    {/* Card Body */}
+                    <div className="space-y-1">
+                      <p
+                        className={`text-sm font-semibold break-words leading-snug ${
+                          todo.completed ? "line-through text-slate-500" : "text-slate-100"
+                        }`}
+                      >
+                        {todo.title}
+                      </p>
+                      {formattedDescription && (
+                        <p className="text-xs text-slate-400 break-words leading-relaxed">
+                          {formattedDescription}
                         </p>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    {todo.dueDate && (
-                      <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                        <Calendar className="w-3.5 h-3.5" />
-                        <span>{todo.dueDate}</span>
-                      </div>
-                    )}
-                    {priorityBadge(todo.priority)}
+                  {/* Card Footer */}
+                  <div className="pt-2.5 border-t border-slate-800/80 flex items-center justify-end gap-2">
                     <button
-                      onClick={() => handleDelete(todo.id)}
-                      className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1.5 text-slate-500 hover:text-rose-400 transition-all rounded hover:bg-slate-800"
-                      title="삭제"
+                      type="button"
+                      disabled={registeringTodoIds.includes(todo.id)}
+                      onClick={() => openTaskConfirmDialog(todo)}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                      title={`Google Tasks '${assistantName}' 목록에 등록`}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {registeringTodoIds.includes(todo.id) ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <CheckSquare className="w-3.5 h-3.5" />
+                      )}
+                      해야 할 일로 등록
                     </button>
                   </div>
                 </div>
               );
-            })
-          )}
-        </div>
+            })}
+          </div>
+        )}
       </div>
+
+      {/* Confirmation Dialog for Calendar / Task Registration */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`p-2 rounded-xl border ${
+                    confirmDialog.type === "calendar"
+                      ? "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
+                      : "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+                  }`}
+                >
+                  {confirmDialog.type === "calendar" ? (
+                    <Calendar className="w-4 h-4" />
+                  ) : (
+                    <CheckSquare className="w-4 h-4" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100">
+                    {confirmDialog.type === "calendar"
+                      ? "Google Calendar 등록 확인"
+                      : "Google Tasks 등록 확인"}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    대상 {confirmDialog.type === "calendar" ? "캘린더" : "목록"}: {assistantName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              id="confirm-register-form"
+              onSubmit={handleConfirmSubmit}
+              className="p-5 space-y-3.5"
+            >
+              {dialogError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 break-words">
+                  {dialogError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  {confirmDialog.type === "calendar" ? "일정 제목" : "할 일 제목"}
+                </label>
+                <input
+                  type="text"
+                  value={confirmDialog.title}
+                  onChange={(e) =>
+                    setConfirmDialog({ ...confirmDialog, title: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+                  required
+                />
+              </div>
+
+              {confirmDialog.type === "calendar" ? (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        날짜
+                      </label>
+                      <input
+                        type="date"
+                        value={confirmDialog.date}
+                        onChange={(e) =>
+                          setConfirmDialog({
+                            ...confirmDialog,
+                            date: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        시작 시간
+                      </label>
+                      <input
+                        type="time"
+                        value={confirmDialog.startClock}
+                        onChange={(e) => {
+                          const nextStart = e.target.value;
+                          let nextEnd = confirmDialog.endClock;
+                          if (nextStart && (!nextEnd || nextEnd <= nextStart)) {
+                            const [h, m] = nextStart.split(":").map(Number);
+                            const total = Math.min(23 * 60 + 59, h * 60 + m + 60);
+                            nextEnd = `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+                          }
+                          setConfirmDialog({
+                            ...confirmDialog,
+                            startClock: nextStart,
+                            endClock: nextEnd,
+                          });
+                        }}
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        종료 시간
+                      </label>
+                      <input
+                        type="time"
+                        value={confirmDialog.endClock}
+                        onChange={(e) =>
+                          setConfirmDialog({
+                            ...confirmDialog,
+                            endClock: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      감지된 장소
+                    </label>
+                    <input
+                      type="text"
+                      value={confirmDialog.location}
+                      onChange={(e) =>
+                        setConfirmDialog({
+                          ...confirmDialog,
+                          location: e.target.value,
+                        })
+                      }
+                      placeholder="장소 (선택)"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    기한
+                  </label>
+                  <input
+                    type="date"
+                    value={
+                      /^\d{4}-\d{2}-\d{2}$/.test(confirmDialog.dueDate)
+                        ? confirmDialog.dueDate
+                        : ""
+                    }
+                    onChange={(e) =>
+                      setConfirmDialog({
+                        ...confirmDialog,
+                        dueDate: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  설명 / 메모
+                </label>
+                <textarea
+                  rows={3}
+                  value={confirmDialog.description}
+                  onChange={(e) =>
+                    setConfirmDialog({
+                      ...confirmDialog,
+                      description: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 leading-relaxed focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+            </form>
+
+            <div className="px-5 py-3.5 border-t border-slate-800 flex items-center justify-end gap-2 bg-slate-900/90">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                form="confirm-register-form"
+                disabled={
+                  (confirmDialog.type === "calendar" &&
+                    registeringEventIds.includes(confirmDialog.ev.id)) ||
+                  (confirmDialog.type === "task" &&
+                    registeringTodoIds.includes(confirmDialog.todo.id))
+                }
+                className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 ${
+                  confirmDialog.type === "calendar"
+                    ? "bg-cyan-600 hover:bg-cyan-500 text-white"
+                    : "bg-emerald-600 hover:bg-emerald-500 text-white"
+                }`}
+              >
+                {((confirmDialog.type === "calendar" &&
+                  registeringEventIds.includes(confirmDialog.ev.id)) ||
+                  (confirmDialog.type === "task" &&
+                    registeringTodoIds.includes(confirmDialog.todo.id))) && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                )}
+                {confirmDialog.type === "calendar"
+                  ? "Google Calendar에 등록"
+                  : "Google Tasks에 등록"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

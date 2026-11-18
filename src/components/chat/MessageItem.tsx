@@ -21,6 +21,8 @@ import {
 
 interface MessageItemProps {
   message: ChatMessage;
+  userName?: string;
+  assistantName?: string;
 }
 
 interface ParsedEmailBriefingItem {
@@ -222,7 +224,11 @@ function MarkdownBlock({ content }: { content: string }) {
   );
 }
 
-export default function MessageItem({ message }: MessageItemProps) {
+export default function MessageItem({
+  message,
+  userName = "나",
+  assistantName = "Junior",
+}: MessageItemProps) {
   const isAssistant = message.role === "assistant";
   const [copied, setCopied] = useState(false);
   const [selectedEmailIds, setSelectedEmailIds] = useState<string[]>([]);
@@ -277,7 +283,7 @@ export default function MessageItem({ message }: MessageItemProps) {
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm text-slate-200">
-              {isAssistant ? "Junior" : "나"}
+              {isAssistant ? assistantName : userName}
             </span>
             <span className="text-[11px] text-slate-500">
               {formatDate(message.timestamp)}

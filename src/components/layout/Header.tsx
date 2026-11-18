@@ -1,51 +1,48 @@
 "use client";
 
 import React from "react";
-import { Menu, Settings } from "lucide-react";
+import { Menu, Settings, LogOut } from "lucide-react";
+import { AppTab, PLACEHOLDER_TAB_META, PlaceholderTab } from "@/lib/navigation";
 
 interface HeaderProps {
-  currentTab:
-    | "chat"
-    | "todos"
-    | "memory"
-    | "notifications"
-    | "gmail"
-    | "contacts"
-    | "gchat"
-    | "gdrive";
+  currentTab: AppTab;
   onToggleSidebar?: () => void;
   onOpenSettings: () => void;
+  onLogout?: () => void;
   model: string;
   userName: string;
+  assistantName?: string;
 }
 
 export default function Header({
   currentTab,
   onToggleSidebar,
   onOpenSettings,
+  onLogout,
   model,
   userName,
+  assistantName = "Junior",
 }: HeaderProps) {
   const getTabTitle = () => {
     switch (currentTab) {
       case "chat":
         return {
-          title: "Junior 작업 목록",
-          sub: `${userName}님 전담 비서 Junior와 대화 및 작업을 진행 중입니다`,
+          title: "대화",
+          sub: `${userName}님 전담 비서 ${assistantName}와 대화 및 작업을 진행 중입니다`,
         };
       case "todos":
         return {
-          title: "확인필요사항",
-          sub: "Junior가 등록한 할 일 & 일정 목록 및 확인이 필요한 스마트 작업 목록",
+          title: "확인사항",
+          sub: `${assistantName}가 등록한 할 일 & 일정 목록 및 확인이 필요한 스마트 작업 목록`,
         };
       case "memory":
         return {
-          title: "비서로써의 당부사항",
-          sub: "Junior가 기억하고 지켜야 할 지침, 선호도 및 프로젝트 당부사항",
+          title: "장기기억 설정",
+          sub: `${assistantName}가 기억하고 지켜야 할 지침, 선호도 및 프로젝트 장기기억 설정`,
         };
       case "notifications":
         return {
-          title: "보고 (5분 주기 스마트 감시)",
+          title: "알림",
           sub: "수신 메일·첨부 문서 요약, 내 할 일·캘린더 자동 등록 및 담당자별 업무 보고",
         };
       case "gmail":
@@ -68,6 +65,16 @@ export default function Header({
           title: "Google 드라이브 (Drive API v3)",
           sub: "Google 문서·시트·폴더 생성, 본문 AI 요약 및 권한 공유 허브",
         };
+      default: {
+        const meta = PLACEHOLDER_TAB_META[currentTab as PlaceholderTab];
+        if (meta) {
+          return {
+            title: meta.title,
+            sub: `${meta.category} · ${meta.subtitle}`,
+          };
+        }
+        return { title: "Workspace", sub: "" };
+      }
     }
   };
 
@@ -99,7 +106,7 @@ export default function Header({
               <span className="w-2 h-2 rounded-full bg-[#34A853]" />
             </div>
           </div>
-          <p className="text-[11px] text-[#5F6368] hidden sm:block truncate">{meta.sub}</p>
+
         </div>
       </div>
 
@@ -119,6 +126,17 @@ export default function Header({
         >
           <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
         </button>
+
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full bg-white hover:bg-[#FCE8E6] border border-[#DDE3EA] hover:border-[#FAD2CF] text-[#444746] hover:text-[#C5221F] text-xs font-medium transition-colors"
+            title="Google 계정 로그아웃"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">로그아웃</span>
+          </button>
+        )}
       </div>
     </header>
   );

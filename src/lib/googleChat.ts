@@ -490,6 +490,101 @@ export async function createGoogleChatSpace(params: {
 }
 
 /**
+ * Finds or creates a 1:1 Direct Message space with a user email via Google Chat API.
+ */
+export async function findOrCreateGoogleChatDmSpace(params: {
+  email: string;
+  displayName?: string;
+}): Promise<{
+  success: boolean;
+  space?: GoogleChatSpace;
+  error?: string;
+}> {
+  const cleanEmail = params.email.trim();
+  if (!cleanEmail) {
+    return { success: false, error: "상대방 이메일이 필요합니다." };
+  }
+
+  const token = await getValidGoogleChatToken();
+  if (!token) {
+    return {
+      success: false,
+      error: "Google Chat OAuth 2.0 연동이 필요합니다.",
+    };
+  }
+
+  try {
+    // 1. Try findDirectMessage first
+    const findUrl = new URL(`${CHAT_API_BASE}/spaces:findDirectMessage`);
+    findUrl.searchParams.set("name", `users/${cleanEmail}`);
+    const findRes = await fetch(findUrl.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (findRes.ok) {
+      const dmSpace = (await findRes.json()) as {
+        name: string;
+        displayName?: string;
+        spaceType?: string;
+      };
+      const saved = upsertGoogleChatSpace({
+        name: params.displayName || dmSpace.displayName || cleanEmail,
+        spaceId: dmSpace.name,
+        spaceType: dmSpace.spaceType || "DIRECT_MESSAGE",
+        description: `1:1 DM (${cleanEmail})`,
+      });
+      return { success: true, space: saved };
+    }
+
+    // 2. Otherwise setup a new DM space
+    const setupRes = await fetch(`${CHAT_API_BASE}/spaces:setup`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        space: { spaceType: "DIRECT_MESSAGE" },
+        memberships: [
+          {
+            member: {
+              name: `users/${cleanEmail}`,
+              type: "HUMAN",
+            },
+          },
+        ],
+      }),
+    });
+
+    if (!setupRes.ok) {
+      const errText = await setupRes.text();
+      return {
+        success: false,
+        error: `DM 스페이스 연결 실패 (HTTP ${setupRes.status}): ${errText.slice(0, 150)}`,
+      };
+    }
+
+    const createdDm = (await setupRes.json()) as {
+      name: string;
+      displayName?: string;
+      spaceType?: string;
+    };
+    const saved = upsertGoogleChatSpace({
+      name: params.displayName || createdDm.displayName || cleanEmail,
+      spaceId: createdDm.name,
+      spaceType: createdDm.spaceType || "DIRECT_MESSAGE",
+      description: `1:1 DM (${cleanEmail})`,
+    });
+    return { success: true, space: saved };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "DM 스페이스 조회 중 오류",
+    };
+  }
+}
+
+/**
  * Lists members of a Google Chat Space via `GET /v1/{parent=spaces/*}/members`.
  */
 export async function listGoogleChatMembers(spaceNameOrId?: string): Promise<{
@@ -1044,6 +1139,7 @@ export async function getGoogleChatMessages(params?: {
   messages: GoogleChatMessageLog[];
   syncedCount: number;
   apiMessage?: string;
+  spaceName?: string;
 }> {
   const db = getDb();
   if (!db.googleChatMessages) db.googleChatMessages = [];
@@ -1182,5 +1278,6 @@ export async function getGoogleChatMessages(params?: {
     messages: filtered.slice(0, maxResults),
     syncedCount,
     apiMessage,
+    spaceName: space?.name,
   };
 }

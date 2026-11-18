@@ -39,8 +39,11 @@ export interface TodoItem {
   description?: string;
   priority: "low" | "medium" | "high";
   dueDate?: string;
-  listName?: string; // e.g., "Junior"
+  listName?: string; // e.g., "Junior" or assistantName
   completed: boolean;
+  googleTaskId?: string;
+  googleTaskSyncedAt?: string;
+  googleTaskListName?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -199,10 +202,11 @@ export interface CalendarEventItem {
   endTime?: string;
   location?: string;
   description?: string;
-  listName?: string; // e.g., "Junior"
+  listName?: string; // e.g., "Junior" or assistantName
   sourceDocId?: string;
   sourceDocName?: string;
   googleCalendarLink?: string;
+  googleCalendarSyncedAt?: string;
   createdAt: string;
 }
 
@@ -261,12 +265,28 @@ export interface JuniorNotificationState {
   processedDriveFileIds: string[];
   processedEmailIds?: string[];
   lastCheckedAt?: string;
+  lastEmailCheckedAt?: string;
+  watchMode?: "webhook" | "local_manual";
+  webhookUrl?: string;
+  gmailWatchExpiration?: string;
+  gmailHistoryId?: string;
+  driveChannelId?: string;
+  driveResourceId?: string;
+  driveChannelExpiration?: string;
+  driveStartPageToken?: string;
+  lastWebhookEventAt?: string;
 }
 
 export interface AppSettings {
   apiKey?: string;
   model: string;
   userName: string;
+  assistantName?: string;
+  authUserEmail?: string;
+  authUserName?: string;
+  authUserPicture?: string;
+  authUserOrg?: string;
+  onboardingCompleted?: boolean;
   theme: "dark" | "light" | "system";
   gmailConfig?: GmailConfig;
   googleChatConfig?: GoogleChatConfig;
@@ -275,6 +295,77 @@ export interface AppSettings {
   googleClientId?: string;
   googleClientSecret?: string;
   gmailTokens?: GmailTokens;
+  emailCheckCount?: number;
+  emailCheckScope?: "all_except_spam" | "inbox_only";
+}
+
+export interface ApprovalFieldDefinition {
+  key: string;
+  label: string;
+  type: "text" | "number" | "date" | "textarea" | "select";
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+  helpText?: string;
+}
+
+export interface ApprovalAmountRule {
+  minAmount: number;
+  maxAmount: number | null;
+  conditionLabel: string;
+  steps: Array<{
+    role: string;
+    approverName: string;
+    approverEmail?: string;
+  }>;
+}
+
+export interface ApprovalTemplate {
+  id: string;
+  name: string;
+  category: string;
+  summary: string;
+  whenToUse: string;
+  keywords: string[];
+  requiresAmount: boolean;
+  executionDept: string;
+  executionAssignee: string;
+  executionEmail: string;
+  amountRules: ApprovalAmountRule[];
+  fields: ApprovalFieldDefinition[];
+  mcpSource: string;
+}
+
+export interface ApprovalStepRecord {
+  order: number;
+  role: string;
+  approverName: string;
+  approverEmail?: string;
+  status: "waiting" | "pending" | "approved" | "rejected";
+  comment?: string;
+  actedAt?: string;
+}
+
+export interface ApprovalDocumentRecord {
+  id: string;
+  docNumber: string;
+  docTypeId: string;
+  docTypeName: string;
+  category: string;
+  title: string;
+  requesterName: string;
+  requesterDept: string;
+  amount?: number;
+  formData: Record<string, string>;
+  steps: ApprovalStepRecord[];
+  currentStepOrder: number;
+  status: "in_progress" | "approved" | "rejected";
+  executionDept: string;
+  executionAssignee: string;
+  executionEmail?: string;
+  executionDeliveredAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface DatabaseSchema {
@@ -290,6 +381,8 @@ export interface DatabaseSchema {
   googleDriveFiles: GoogleDriveFileItem[];
   notifications: JuniorNotificationItem[];
   notificationState: JuniorNotificationState;
+  approvalTemplates?: ApprovalTemplate[];
+  approvalDocuments?: ApprovalDocumentRecord[];
   settings: AppSettings;
 }
 
@@ -367,6 +460,8 @@ const defaultData: DatabaseSchema = {
   settings: {
     model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
     userName: process.env.USER_NAME || "사용자",
+    assistantName: "Junior",
+    onboardingCompleted: false,
     theme: "dark",
   },
 };

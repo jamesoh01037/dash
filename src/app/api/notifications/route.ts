@@ -1,11 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb, saveDb } from "@/lib/db";
+import { getDb, saveDb, DatabaseSchema, JuniorNotificationItem } from "@/lib/db";
 import { checkJuniorNotifications } from "@/lib/notifications";
 import {
   performGmailImapAction,
   performBatchGmailImapActions,
   GmailImapActionType,
 } from "@/lib/gmail";
+
+function removeDetectedCandidatesForNotifications(
+  db: DatabaseSchema,
+  removedNotifs: JuniorNotificationItem[]
+) {
+  if (removedNotifs.length === 0) return;
+  const todoIds = new Set<string>();
+  const eventIds = new Set<string>();
+  for (const n of removedNotifs) {
+    for (const t of n.myTodosRegistered || []) {
+      if (t.id) todoIds.add(t.id);
+    }
+    for (const e of n.calendarEventsRegistered || []) {
+      if (e.id) eventIds.add(e.id);
+    }
+  }
+  if (todoIds.size > 0 && Array.isArray(db.todos)) {
+    db.todos = db.todos.filter((t) => !todoIds.has(t.id));
+  }
+  if (eventIds.size > 0 && Array.isArray(db.calendarEvents)) {
+    db.calendarEvents = db.calendarEvents.filter((e) => !eventIds.has(e.id));
+  }
+}
 
 export async function GET() {
   try {
@@ -16,7 +39,9 @@ export async function GET() {
     return NextResponse.json({
       notifications,
       unreadCount,
+      todos: db.todos || [],
       calendarEvents: db.calendarEvents || [],
+      assistantName: db.settings?.assistantName?.trim() || "Junior",
       notificationState: db.notificationState || {
         enabled: true,
         intervalMinutes: 5,
@@ -66,6 +91,7 @@ export async function POST(req: NextRequest) {
         if (target && target.type === "gmail_new_message" && target.fileId) {
           await performGmailImapAction({
             emailUid: target.fileId,
+            subject: target.fileName,
             action: "mark_read",
           });
         }
@@ -107,6 +133,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (gmailAction === "spam" || gmailAction === "trash") {
+        removeDetectedCandidatesForNotifications(db, [target]);
         db.notifications = db.notifications.filter((n) => n.id !== id);
       } else if (gmailAction === "archive") {
         db.notifications = db.notifications.map((n) =>
@@ -165,6 +192,7 @@ export async function POST(req: NextRequest) {
         if (target && target.type === "gmail_new_message" && target.fileId) {
           imapBatchItems.push({
             emailUid: target.fileId,
+            subject: target.fileName,
             action: qItem.gmailAction,
             snoozeLabel: qItem.snoozeLabel,
           });
@@ -191,6 +219,9 @@ export async function POST(req: NextRequest) {
           updateMap.set(qItem.id, qItem);
         }
       }
+
+      const removedNotifs = db.notifications.filter((n) => removeIds.has(n.id));
+      removeDetectedCandidatesForNotifications(db, removedNotifs);
 
       db.notifications = db.notifications
         .filter((n) => !removeIds.has(n.id))
@@ -276,12 +307,17 @@ export async function DELETE(req: NextRequest) {
     let gmailResult: { success: boolean; message: string } | undefined;
 
     if (clearAll) {
+      removeDetectedCandidatesForNotifications(db, db.notifications);
       db.notifications = [];
     } else if (id) {
       const target = db.notifications.find((n) => n.id === id);
+      if (target) {
+        removeDetectedCandidatesForNotifications(db, [target]);
+      }
       if (target && target.type === "gmail_new_message" && target.fileId) {
         gmailResult = await performGmailImapAction({
           emailUid: target.fileId,
+          subject: target.fileName,
           action: "trash",
         });
       }

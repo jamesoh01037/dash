@@ -7,9 +7,13 @@ import { Brain, Plus, Trash2, Sparkles, User, Pencil, Check, X } from "lucide-re
 
 interface MemoryViewerProps {
   onRefreshTrigger?: () => void;
+  assistantName?: string;
 }
 
-export default function MemoryViewer({ onRefreshTrigger }: MemoryViewerProps) {
+export default function MemoryViewer({
+  onRefreshTrigger,
+  assistantName = "Junior",
+}: MemoryViewerProps) {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [category, setCategory] = useState<"all" | "personal" | "preference" | "work" | "general">("all");
   const [newContent, setNewContent] = useState("");
@@ -135,9 +139,9 @@ export default function MemoryViewer({ onRefreshTrigger }: MemoryViewerProps) {
       <div className="p-4 rounded-xl bg-white border border-[#DDE3EA] flex items-start gap-3">
         <Brain className="w-6 h-6 text-[#444746] shrink-0 mt-0.5" />
         <div className="space-y-1">
-          <h3 className="text-sm font-bold text-[#1F1F1F]">Junior의 장기 기억 (Personal Knowledge Base)</h3>
+          <h3 className="text-sm font-bold text-[#1F1F1F]">{assistantName}의 장기 기억 (Personal Knowledge Base)</h3>
           <p className="text-xs text-[#3C4043] leading-relaxed">
-            Junior는 대화 중에 말씀하시는 취향, 습관, 프로젝트 목표 등을 자동으로 캐치하여 영구 기억에 저장합니다.
+            {assistantName}는 대화 중에 말씀하시는 취향, 습관, 프로젝트 목표 등을 자동으로 캐치하여 영구 기억에 저장합니다.
             여기 저장된 기억은 모든 대화의 백그라운드 맥락으로 자동 주입되어 맞춤형 조언을 제공합니다.
           </p>
         </div>
@@ -163,7 +167,7 @@ export default function MemoryViewer({ onRefreshTrigger }: MemoryViewerProps) {
             type="text"
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
-            placeholder="Junior에게 직접 기억시킬 사실을 입력하세요 (예: 주로 쓰는 에디터는 VS Code이다)..."
+            placeholder={`${assistantName}에게 직접 기억시킬 사실을 입력하세요 (예: 주로 쓰는 에디터는 VS Code이다)...`}
             className="flex-1 px-3 py-2 bg-slate-950/80 border border-slate-800 rounded-lg text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-junior-500"
           />
           <button

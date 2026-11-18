@@ -3,7 +3,7 @@ import { getAgentModel } from "@/lib/gemini";
 import { getDb, saveDb, ChatMessage, ToolCallRecord, Attachment } from "@/lib/db";
 import { executeToolCall } from "@/lib/tools/executor";
 import { generateId } from "@/lib/utils";
-import { Part } from "@google/generative-ai";
+import { Part, FunctionCallingMode } from "@google/generative-ai";
 
 export async function POST(req: NextRequest) {
   try {
@@ -140,8 +140,9 @@ export async function POST(req: NextRequest) {
           const recordedToolCalls: ToolCallRecord[] = [];
 
           // Tool call loop
+          const MAX_TOOL_LOOPS = 10;
           let loopCount = 0;
-          while (functionCalls && functionCalls.length > 0 && loopCount < 5) {
+          while (functionCalls && functionCalls.length > 0 && loopCount < MAX_TOOL_LOOPS) {
             loopCount++;
 
             // Push model's candidate with functionCall into contents
@@ -196,8 +197,36 @@ export async function POST(req: NextRequest) {
             functionCalls = response.response.functionCalls();
           }
 
-          // Final text response
-          const finalText = response.response.text();
+          // If the model still wants to call tools after MAX_TOOL_LOOPS or returned empty text,
+          // force a final text-only synthesis using already collected tool results.
+          let finalText = response.response.text();
+          if ((functionCalls && functionCalls.length > 0) || !finalText.trim()) {
+            const lastTurn = contents[contents.length - 1];
+            const synthInstruction: Part = {
+              text: "도구 호출 횟수 상한에 도달했습니다. 지금까지 수집한 도구 실행 결과만을 바탕으로 사용자에게 최종 답변을 작성해 주세요.",
+            };
+            if (lastTurn && lastTurn.role === "user") {
+              lastTurn.parts.push(synthInstruction);
+            } else {
+              contents.push({ role: "user", parts: [synthInstruction] });
+            }
+
+            const forcedResponse = await generativeModel.generateContent({
+              contents,
+              toolConfig: {
+                functionCallingConfig: {
+                  mode: FunctionCallingMode.NONE,
+                },
+              },
+            });
+            finalText = forcedResponse.response.text() || finalText;
+          }
+
+          if (!finalText.trim()) {
+            finalText =
+              "조회된 정보를 바탕으로 최종 답변을 생성하지 못했습니다. 질문을 조금 더 구체화해 다시 시도해 주세요.";
+          }
+
           sendEvent("text", { chunk: finalText });
 
           // Save assistant message to DB

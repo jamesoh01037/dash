@@ -377,6 +377,7 @@ async function registerExtractedTodosAndSchedules(params: {
   const db = getDb();
   if (!db.todos) db.todos = [];
   if (!db.calendarEvents) db.calendarEvents = [];
+  const assistantName = db.settings?.assistantName?.trim() || "Junior";
 
   const registeredTodos: JuniorNotificationItem["myTodosRegistered"] = [];
   for (const t of params.analysis.myTodos) {
@@ -384,82 +385,45 @@ async function registerExtractedTodosAndSchedules(params: {
     const newTodo: TodoItem = {
       id: generateId(),
       title: t.title.trim(),
-      description: `[Junior 알림 자동 등록] '${params.sourceLabel}' (${params.ownerLabel})에서 추출된 내 할 일`,
+      description: `[${assistantName} 알림 후보] '${params.sourceLabel}' (${params.ownerLabel})에서 추출된 내 할 일`,
       priority: t.priority || "high",
       dueDate: t.dueDate,
-      listName: "Junior",
+      listName: assistantName,
       completed: false,
       createdAt: params.nowIso,
       updatedAt: params.nowIso,
     };
     db.todos.unshift(newTodo);
-    await registerGoogleTaskToJuniorList({
-      title: newTodo.title,
-      notes: newTodo.description,
-      dueDate: newTodo.dueDate,
-      listName: "Junior",
-    });
     registeredTodos.push({
       id: newTodo.id,
       title: newTodo.title,
       dueDate: newTodo.dueDate,
       priority: newTodo.priority,
-      listName: "Junior",
+      listName: assistantName,
     });
   }
 
   const registeredEvents: JuniorNotificationItem["calendarEventsRegistered"] = [];
   for (const s of params.analysis.schedules) {
     if (!s.title?.trim()) continue;
-    const remoteCalLink = await registerGoogleCalendarEventToJuniorList({
-      title: s.title.trim(),
-      startTime: s.startTime || "일정 미정",
-      location: s.location,
-      description: `출처: ${params.sourceLabel} (${params.ownerLabel})`,
-      listName: "Junior",
-    });
-    const calLink =
-      remoteCalLink ||
-      buildGoogleCalendarTemplateUrl({
-        title: s.title.trim(),
-        startTime: s.startTime || "",
-        description: `출처: ${params.sourceLabel}`,
-        listName: "Junior",
-      });
-
     const newCalEvent: CalendarEventItem = {
       id: generateId(),
       title: s.title.trim(),
       startTime: s.startTime || "일정 확인 필요",
       location: s.location,
-      description: s.description || `출처: ${params.sourceLabel}`,
-      listName: "Junior",
+      description: s.description || `출처: ${params.sourceLabel} (${params.ownerLabel})`,
+      listName: assistantName,
       sourceDocId: params.sourceDocId,
       sourceDocName: params.sourceLabel,
-      googleCalendarLink: calLink,
       createdAt: params.nowIso,
     };
     db.calendarEvents.unshift(newCalEvent);
-
-    const scheduleTodo: TodoItem = {
-      id: generateId(),
-      title: `📅 [캘린더 일정] ${newCalEvent.title}`,
-      description: `일시: ${newCalEvent.startTime} | 출처: ${params.sourceLabel}`,
-      priority: "medium",
-      dueDate: newCalEvent.startTime,
-      listName: "Junior",
-      completed: false,
-      createdAt: params.nowIso,
-      updatedAt: params.nowIso,
-    };
-    db.todos.unshift(scheduleTodo);
 
     registeredEvents.push({
       id: newCalEvent.id,
       title: newCalEvent.title,
       startTime: newCalEvent.startTime,
-      googleCalendarLink: calLink,
-      listName: "Junior",
+      listName: assistantName,
     });
   }
 
@@ -599,7 +563,7 @@ export async function checkJuniorNotifications(options?: {
 
     const { registeredTodos, registeredEvents } =
       await registerExtractedTodosAndSchedules({
-        sourceLabel: file.name,
+        sourceLabel: `[Drive] ${file.name}`,
         sourceDocId: fileKey,
         ownerLabel: file.ownerName || file.ownerEmail || "외부 문서",
         analysis,
@@ -673,27 +637,38 @@ export async function checkJuniorNotifications(options?: {
       },
     ];
   } else {
-    const gmailRes = await fetchRecentGmailMessagesWithAttachments(5);
+    const dbSettings = getDb().settings;
+    const emailCheckCount = Math.max(
+      1,
+      Math.min(100, Number(dbSettings.emailCheckCount) || 20)
+    );
+    const emailCheckScope = dbSettings.emailCheckScope || "all_except_spam";
+
+    const gmailRes = await fetchRecentGmailMessagesWithAttachments(
+      emailCheckCount,
+      emailCheckScope
+    );
     if (gmailRes.success && gmailRes.messages.length > 0) {
       const dbForEmail = getDb();
       const emailState = dbForEmail.notificationState;
       if (!emailState.processedEmailIds) emailState.processedEmailIds = [];
 
+      const cutoffIso =
+        emailState.lastEmailCheckedAt || emailState.lastCheckedAt || undefined;
+      const cutoffMs = cutoffIso
+        ? new Date(cutoffIso).getTime()
+        : Date.now() - 10 * 60 * 1000;
+
       if (!emailState.initializedEmailBaseline) {
-        const tenMinAgo = Date.now() - 10 * 60 * 1000;
-        for (const m of gmailRes.messages) {
-          const msgTime = new Date(m.dateIso).getTime();
-          if (msgTime < tenMinAgo && !emailState.processedEmailIds.includes(m.uid)) {
-            emailState.processedEmailIds.push(m.uid);
-          }
-        }
         emailState.initializedEmailBaseline = true;
         saveDb(dbForEmail);
       }
 
-      candidateEmails = gmailRes.messages.filter(
-        (m) => !emailState.processedEmailIds?.includes(m.uid)
-      );
+      candidateEmails = gmailRes.messages.filter((m) => {
+        if (emailState.processedEmailIds?.includes(m.uid)) return false;
+        const msgTime = new Date(m.dateIso).getTime();
+        return Number.isFinite(msgTime) ? msgTime > cutoffMs : true;
+      });
     }
   }
 
@@ -719,7 +694,7 @@ export async function checkJuniorNotifications(options?: {
 
     const { registeredTodos, registeredEvents } =
       await registerExtractedTodosAndSchedules({
-        sourceLabel: `[메일] ${emailMsg.subject}`,
+        sourceLabel: `[Mail] ${emailMsg.subject}`,
         sourceDocId: `gmail-${emailMsg.uid}`,
         ownerLabel: emailMsg.fromName || emailMsg.fromEmail,
         analysis,
@@ -730,7 +705,7 @@ export async function checkJuniorNotifications(options?: {
     const emailNotif: JuniorNotificationItem = {
       id: generateId(),
       type: "gmail_new_message",
-      title: `✉️ 새로운 메일이 도착했습니다: '${emailMsg.subject}'${
+      title: `${emailMsg.subject}${
         emailMsg.attachments.length > 0
           ? ` (첨부문서 ${emailMsg.attachments.length}건 포함)`
           : ""
@@ -794,6 +769,9 @@ export async function checkJuniorNotifications(options?: {
 
   const finalDb = getDb();
   finalDb.notificationState.lastCheckedAt = nowIso;
+  if (!options?.simulateExternalDoc && !options?.simulateNewEmail) {
+    finalDb.notificationState.lastEmailCheckedAt = nowIso;
+  }
   saveDb(finalDb);
 
   return {

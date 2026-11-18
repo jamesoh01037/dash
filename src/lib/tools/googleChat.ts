@@ -252,6 +252,7 @@ export async function executeManageGoogleChat(args: ManageGoogleChatArgs) {
           success: true,
           count: res.messages.length,
           syncedCount: res.syncedCount,
+          spaceName: res.spaceName,
           messages: res.messages,
           message:
             res.messages.length > 0

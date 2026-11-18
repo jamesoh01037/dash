@@ -31,6 +31,7 @@ import {
   Globe,
 } from "lucide-react";
 import { GoogleDriveFileItem } from "@/lib/db";
+import { withGoogleAuthUser } from "@/lib/utils";
 
 interface DriveAuthStatus {
   authMode: "oauth2" | "service_account" | "token" | "local";
@@ -846,7 +847,7 @@ export default function GoogleDriveDashboard({
           </div>
 
           <a
-            href="https://drive.google.com"
+            href={withGoogleAuthUser("https://drive.google.com", authStatus?.connectedEmail)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1 shrink-0"

@@ -1073,6 +1073,102 @@ export async function createDriveFileOrDoc(params: {
 }
 
 /**
+ * Uploads a raw binary Buffer (e.g., an email attachment) to Google Drive
+ * and returns its shareable webViewLink.
+ */
+export async function uploadBufferToGoogleDrive(params: {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+  description?: string;
+}): Promise<{
+  success: boolean;
+  file?: GoogleDriveFileItem;
+  webViewLink?: string;
+  error?: string;
+}> {
+  const token = await getValidGoogleDriveToken();
+  if (!token) {
+    return {
+      success: false,
+      error: "Google Drive OAuth 연동이 필요합니다.",
+    };
+  }
+
+  try {
+    const boundary = `junior_bin_boundary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const metadata = {
+      name: params.name,
+      ...(params.description ? { description: params.description } : {}),
+    };
+
+    const headerPart = Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+        `${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Type: ${params.mimeType || "application/octet-stream"}\r\n\r\n`,
+      "utf-8"
+    );
+    const footerPart = Buffer.from(`\r\n--${boundary}--`, "utf-8");
+    const bodyBuffer = Buffer.concat([headerPart, params.buffer, footerPart]);
+
+    const res = await fetch(
+      `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,webContentLink,size,starred,shared,parents,description,modifiedTime`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/related; boundary=${boundary}`,
+          Authorization: `Bearer ${token}`,
+        },
+        body: bodyBuffer,
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        error: `Google Drive 업로드 실패 (HTTP ${res.status}): ${errText.slice(0, 150)}`,
+      };
+    }
+
+    const createdRemote = (await res.json()) as RemoteDriveFile;
+
+    // Best-effort: allow anyone with link to view
+    try {
+      await fetch(`${DRIVE_API_BASE}/files/${createdRemote.id}/permissions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=UTF-8",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ role: "reader", type: "anyone" }),
+      });
+    } catch {
+      // non-fatal if domain policy restricts anyone-with-link
+    }
+
+    const mapped = mapRemoteDriveFile(createdRemote);
+    const db = getDb();
+    if (!db.googleDriveFiles) db.googleDriveFiles = [];
+    mergeDriveFileIntoList(db.googleDriveFiles, mapped);
+    saveDb(db);
+
+    return {
+      success: true,
+      file: mapped,
+      webViewLink: mapped.webViewLink || `https://drive.google.com/file/d/${createdRemote.id}/view`,
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Google Drive 업로드 오류",
+    };
+  }
+}
+
+/**
  * Updates a Google Drive file's metadata (name, starred, description) or text content.
  */
 export async function updateDriveFile(params: {

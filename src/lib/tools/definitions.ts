@@ -348,6 +348,48 @@ export const manageGoogleDriveDeclaration: FunctionDeclaration = {
   },
 };
 
+export const manageApprovalFlowDeclaration: FunctionDeclaration = {
+  name: "manage_approval_flow",
+  description:
+    "회사의 전자결재(Approval Flow) 규정을 MCP 서버에서 조회해 상황에 맞는 결재 양식을 추천하고, 필수/선택 입력 항목과 금액별 결재선을 안내하며, 대화로 채운 결재 문서를 상신하거나 DB에 기록된 결재 통계를 조회합니다.",
+  parameters: {
+    type: SchemaType.OBJECT,
+    properties: {
+      action: {
+        type: SchemaType.STRING,
+        description:
+          "수행할 작업: 'recommend_template' (상황에 맞는 결재 문서 추천), 'get_template_fields' (결재 문서의 필수/선택 입력 항목 및 금액별 결재선 조회), 'submit_approval' (결재 문서 상신 및 DB 기록), 'get_statistics' (결재 문서별 통계/현황 조회)",
+      },
+      situation: {
+        type: SchemaType.STRING,
+        description: "사용자가 설명한 업무 상황 또는 찾고자 하는 결재 키워드 ('recommend_template' 시 사용)",
+      },
+      docTypeId: {
+        type: SchemaType.STRING,
+        description:
+          "결재 문서 ID 또는 이름 (예: 'general-proposal', 'expense-resolution', 'purchase-request', 'leave-travel-request' 또는 '일반 품의서', '지출결의서')",
+      },
+      title: {
+        type: SchemaType.STRING,
+        description: "상신할 결재 문서 제목 ('submit_approval' 시 필수)",
+      },
+      amount: {
+        type: SchemaType.NUMBER,
+        description: "결재 금액(원 단위 숫자). 금액 조건에 따른 결재선 산정에 사용됩니다.",
+      },
+      requesterDept: {
+        type: SchemaType.STRING,
+        description: "기안자 소속 부서명 (선택, 기본값: 사업개발팀)",
+      },
+      formData: {
+        type: SchemaType.OBJECT,
+        description: "결재 문서 양식의 각 항목 key-value 객체 ('submit_approval' 시 사용)",
+      },
+    },
+    required: ["action"],
+  },
+};
+
 export const agentTools = [
   {
     functionDeclarations: [
@@ -358,6 +400,7 @@ export const agentTools = [
       manageContactsDeclaration,
       manageGoogleChatDeclaration,
       manageGoogleDriveDeclaration,
+      manageApprovalFlowDeclaration,
     ],
   },
 ];

@@ -28,6 +28,7 @@ import {
   Globe,
 } from "lucide-react";
 import { ContactItem, ContactGroupItem } from "@/lib/db";
+import { withGoogleAuthUser } from "@/lib/utils";
 
 interface ContactsAuthStatus {
   authMode: "oauth2" | "token" | "gmail_imap";
@@ -673,7 +674,7 @@ export default function ContactsDashboard({
               <Tag className="w-3 h-3" /> + 새 라벨/그룹 만들기
             </button>
             <a
-              href="https://contacts.google.com"
+              href={withGoogleAuthUser("https://contacts.google.com", authStatus?.connectedEmail)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-slate-400 hover:text-cyan-400 flex items-center gap-1"

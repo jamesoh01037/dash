@@ -24,10 +24,11 @@ export function getAgentModel(customApiKey?: string, customModel?: string) {
   const db = getDb();
   const modelName = customModel || db.settings?.model || "gemini-3.8-flash";
   const userName = db.settings?.userName || "사용자";
+  const assistantName = db.settings?.assistantName || "Junior";
 
   return client.getGenerativeModel({
     model: modelName,
-    systemInstruction: buildSystemInstruction(userName),
+    systemInstruction: buildSystemInstruction(userName, assistantName),
     tools: agentTools,
   });
 }

@@ -9,6 +9,8 @@ import { Send, Paperclip, X, Sparkles, Loader2, ArrowDown } from "lucide-react";
 interface ChatInterfaceProps {
   sessionId: string;
   initialPrompt?: string;
+  userName?: string;
+  assistantName?: string;
   onRefreshData?: () => void;
   onClearInitialPrompt?: () => void;
 }
@@ -16,6 +18,8 @@ interface ChatInterfaceProps {
 export default function ChatInterface({
   sessionId,
   initialPrompt,
+  userName = "사용자",
+  assistantName = "Junior",
   onRefreshData,
   onClearInitialPrompt,
 }: ChatInterfaceProps) {
@@ -255,31 +259,22 @@ export default function ChatInterface({
       >
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-junior-600 to-cyan-500 flex items-center justify-center text-white shadow-xl shadow-junior-500/20 mb-4 animate-bounce">
-              <Sparkles className="w-7 h-7" />
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-junior-600 to-cyan-500 flex items-center justify-center text-white shadow-lg shadow-junior-500/20 mb-4">
+              <Sparkles className="w-6 h-6" />
             </div>
-            <h2 className="text-xl font-bold text-slate-100 mb-2">
-              Junior 준비 완료!
-            </h2>
-            <p className="text-sm text-slate-400 max-w-md mb-6">
-              업무, 개발, 일정, 정보 탐색을 능동적으로 돕는 맞춤형 AI 비서입니다.
-              무엇이든 편하게 이야기해 보세요.
+            <p className="text-base font-semibold text-slate-200">
+              {userName}님을 돕기 위해 기다리고 있습니다.
             </p>
-
-            <div className="flex flex-wrap justify-center gap-2 max-w-lg">
-              {quickPrompts.map((p, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleSend(p)}
-                  className="text-xs px-3 py-2 bg-slate-900 border border-slate-800 hover:border-junior-500/50 hover:bg-slate-800/80 text-slate-300 rounded-full transition-all"
-                >
-                  ✨ {p}
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
-          messages.map((msg) => <MessageItem key={msg.id} message={msg} />)
+          messages.map((msg) => (
+            <MessageItem
+              key={msg.id}
+              message={msg}
+              userName={userName}
+              assistantName={assistantName}
+            />
+          ))
         )}
 
         {/* Live streaming / active tool calling bubble */}
@@ -290,7 +285,7 @@ export default function ChatInterface({
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1">
-                <span className="font-semibold text-sm text-slate-200">Junior</span>
+                <span className="font-semibold text-sm text-slate-200">{assistantName}</span>
                 <span className="text-[11px] text-junior-400 flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" /> 생각하는 중...
                 </span>
@@ -381,7 +376,7 @@ export default function ChatInterface({
             value={input}
             onChange={handleTextareaInput}
             onKeyDown={handleKeyDown}
-            placeholder="Junior에게 무엇이든 물어보거나 지시하세요... (Shift+Enter로 줄바꿈)"
+            placeholder={`${assistantName}에게 무엇이든 물어보거나 지시하세요... (Shift+Enter로 줄바꿈)`}
             className="flex-1 max-h-[180px] bg-transparent text-sm text-slate-100 placeholder:text-slate-500 resize-none outline-none py-2 px-1 leading-relaxed"
           />
 
@@ -396,8 +391,7 @@ export default function ChatInterface({
           </button>
         </div>
 
-        <div className="flex items-center justify-between mt-2 px-1 text-[11px] text-slate-500">
-          <span>Junior는 웹 검색, 할 일 관리, 장기 기억 도구를 능동적으로 활용합니다.</span>
+        <div className="flex items-center justify-end mt-2 px-1 text-[11px] text-slate-500">
           <span className="hidden sm:inline">Enter로 전송</span>
         </div>
       </div>

@@ -1,9 +1,14 @@
 import zlib from "zlib";
+import { google } from "googleapis";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { simpleParser } from "mailparser";
 import { getDb, saveDb, GmailConfig } from "./db";
-import { extractReadableTextFromHwpBuffer, isHwpFile } from "./googleDrive";
+import {
+  extractReadableTextFromHwpBuffer,
+  getValidGoogleDriveToken,
+  isHwpFile,
+} from "./googleDrive";
 
 export interface ParsedEmailAttachment {
   filename: string;
@@ -254,10 +259,80 @@ export async function getGmailMessageDetails(
   }
 }
 
+export async function fetchGmailMessageAttachmentsByUid(
+  emailUid: string
+): Promise<{
+  success: boolean;
+  attachments: Array<{
+    filename: string;
+    contentType: string;
+    size: number;
+    content: Buffer;
+  }>;
+  error?: string;
+}> {
+  if (!emailUid || emailUid.startsWith("sim-email-")) {
+    return { success: true, attachments: [] };
+  }
+
+  const { email, appPassword } = getGmailCredentials();
+  if (!email || !appPassword) {
+    return { success: false, attachments: [], error: "Gmail 계정이 연동되어 있지 않습니다." };
+  }
+
+  const client = new ImapFlow({
+    host: "imap.gmail.com",
+    port: 993,
+    secure: true,
+    auth: { user: email, pass: appPassword },
+    logger: false,
+  });
+
+  try {
+    await client.connect();
+    let targetMailbox = "INBOX";
+    try {
+      const mailboxes = await client.list();
+      const allMail = mailboxes.find((m) => m.specialUse === "\\All");
+      if (allMail?.path) {
+        targetMailbox = allMail.path;
+      }
+    } catch {
+      // fallback to INBOX
+    }
+
+    const lock = await client.getMailboxLock(targetMailbox);
+    try {
+      for await (const msg of client.fetch(emailUid, { source: true }, { uid: true })) {
+        if (msg.source) {
+          const parsed = await simpleParser(msg.source);
+          const attachments = (parsed.attachments || []).map((att) => ({
+            filename: att.filename || "attachment",
+            contentType: att.contentType || "application/octet-stream",
+            size: att.size || att.content?.length || 0,
+            content: Buffer.isBuffer(att.content)
+              ? att.content
+              : Buffer.from(att.content || ""),
+          }));
+          return { success: true, attachments };
+        }
+      }
+      return { success: true, attachments: [] };
+    } finally {
+      lock.release();
+      await client.logout();
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, attachments: [], error: message };
+  }
+}
+
 export async function sendGmailMessage(
   to: string,
   subject: string,
-  body: string
+  body: string,
+  cc?: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const { email, appPassword } = getGmailCredentials();
   if (!email || !appPassword) {
@@ -277,6 +352,7 @@ export async function sendGmailMessage(
     const info = await transporter.sendMail({
       from: `"${senderName} via Junior" <${email}>`,
       to,
+      ...(cc && cc.trim() ? { cc: cc.trim() } : {}),
       subject,
       text: body,
     });
@@ -458,11 +534,166 @@ export function extractAttachmentDocumentText(
   }
 }
 
+function decodeBase64Url(data?: string | null): Buffer {
+  if (!data) return Buffer.alloc(0);
+  const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64");
+}
+
+function parseFromHeader(raw: string): { name: string; email: string } {
+  const trimmed = (raw || "").trim();
+  const match = trimmed.match(/^(?:"?([^"]*)"?\s*)?<([^>]+)>$/);
+  if (match) {
+    return {
+      name: (match[1] || "").trim() || match[2].trim(),
+      email: match[2].trim(),
+    };
+  }
+  return { name: trimmed || "알 수 없음", email: trimmed };
+}
+
+async function fetchRecentGmailMessagesViaOAuth(
+  maxResults = 20,
+  scope: "all_except_spam" | "inbox_only" = "all_except_spam"
+): Promise<{
+  success: boolean;
+  messages: DetailedGmailMessage[];
+  error?: string;
+}> {
+  const accessToken = await getValidGoogleDriveToken();
+  if (!accessToken) {
+    return {
+      success: false,
+      messages: [],
+      error: "Google OAuth 계정이 연동되어 있지 않습니다.",
+    };
+  }
+
+  try {
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: accessToken });
+    const gmail = google.gmail({ version: "v1", auth });
+
+    const listRes = await gmail.users.messages.list({
+      userId: "me",
+      maxResults,
+      ...(scope === "inbox_only"
+        ? { labelIds: ["INBOX"], q: "-in:sent -in:drafts" }
+        : { q: "-in:spam -in:trash -in:sent -in:drafts" }),
+    });
+    const listItems = listRes.data.messages || [];
+    const results: DetailedGmailMessage[] = [];
+
+    for (const item of listItems) {
+      if (!item.id) continue;
+      const msgRes = await gmail.users.messages.get({
+        userId: "me",
+        id: item.id,
+        format: "full",
+      });
+      const payload = msgRes.data.payload;
+      const headers = payload?.headers || [];
+      const getHeader = (name: string) =>
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+
+      const fromRaw = getHeader("From");
+      const parsedFrom = parseFromHeader(fromRaw);
+      const to = getHeader("To");
+      const subject = getHeader("Subject") || "(제목 없음)";
+      const dateStr = getHeader("Date");
+      const dateIso = dateStr
+        ? new Date(dateStr).toISOString()
+        : msgRes.data.internalDate
+          ? new Date(Number(msgRes.data.internalDate)).toISOString()
+          : new Date().toISOString();
+      const isUnread = Boolean(msgRes.data.labelIds?.includes("UNREAD"));
+
+      let plainText = "";
+      let htmlText = "";
+      const attachments: ParsedEmailAttachment[] = [];
+
+      const walkParts = async (part: typeof payload) => {
+        if (!part) return;
+        const mime = (part.mimeType || "").toLowerCase();
+        const filename = part.filename || "";
+
+        if (filename && (part.body?.attachmentId || part.body?.data)) {
+          let buf: Buffer = Buffer.alloc(0);
+          if (part.body?.data) {
+            buf = decodeBase64Url(part.body.data);
+          } else if (part.body?.attachmentId) {
+            try {
+              const attRes = await gmail.users.messages.attachments.get({
+                userId: "me",
+                messageId: item.id!,
+                id: part.body.attachmentId,
+              });
+              buf = decodeBase64Url(attRes.data.data);
+            } catch {
+              // ignore attachment download error
+            }
+          }
+          const extractedText =
+            buf.byteLength > 0
+              ? extractAttachmentDocumentText(buf, filename, mime)
+              : `첨부 문서 (${filename})`;
+          attachments.push({
+            filename,
+            contentType: mime || "application/octet-stream",
+            size: part.body?.size || buf.byteLength,
+            extractedText,
+          });
+        } else if (mime === "text/plain" && part.body?.data && !plainText) {
+          plainText = decodeBase64Url(part.body.data).toString("utf8");
+        } else if (mime === "text/html" && part.body?.data && !htmlText) {
+          htmlText = decodeBase64Url(part.body.data).toString("utf8");
+        }
+
+        if (part.parts) {
+          for (const child of part.parts) {
+            await walkParts(child);
+          }
+        }
+      };
+
+      await walkParts(payload);
+      const bodyText = (
+        plainText ||
+        htmlText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ")
+      )
+        .trim()
+        .slice(0, 6000);
+
+      results.push({
+        uid: item.id,
+        fromName: parsedFrom.name,
+        fromEmail: parsedFrom.email,
+        fromRaw: fromRaw || parsedFrom.email,
+        to,
+        subject,
+        dateIso,
+        bodyText,
+        isUnread,
+        attachments,
+      });
+    }
+
+    return { success: true, messages: results };
+  } catch (err) {
+    return {
+      success: false,
+      messages: [],
+      error: err instanceof Error ? err.message : "Gmail OAuth 조회 실패",
+    };
+  }
+}
+
 /**
- * Fetches recent unread/incoming Gmail messages along with parsed attachment text for the 5-minute Junior Notification watcher.
+ * Fetches recent unread/incoming Gmail messages along with parsed attachment text.
  */
 export async function fetchRecentGmailMessagesWithAttachments(
-  maxResults = 5
+  maxResults = 20,
+  scope: "all_except_spam" | "inbox_only" = "all_except_spam"
 ): Promise<{
   success: boolean;
   messages: DetailedGmailMessage[];
@@ -470,11 +701,7 @@ export async function fetchRecentGmailMessagesWithAttachments(
 }> {
   const { email, appPassword } = getGmailCredentials();
   if (!email || !appPassword) {
-    return {
-      success: false,
-      messages: [],
-      error: "Gmail 계정이 연동되어 있지 않습니다.",
-    };
+    return fetchRecentGmailMessagesViaOAuth(maxResults, scope);
   }
 
   const client = new ImapFlow({
@@ -490,22 +717,46 @@ export async function fetchRecentGmailMessagesWithAttachments(
 
   try {
     await client.connect();
-    const lock = await client.getMailboxLock("INBOX");
+    let targetMailbox = "INBOX";
+    if (scope === "all_except_spam") {
+      try {
+        const mailboxes = await client.list();
+        const allMailBox = mailboxes.find(
+          (m) =>
+            m.specialUse === "\\All" ||
+            m.path === "[Gmail]/All Mail" ||
+            m.path === "[Gmail]/전체보관함"
+        );
+        if (allMailBox?.path) {
+          targetMailbox = allMailBox.path;
+        }
+      } catch {
+        targetMailbox = "INBOX";
+      }
+    }
+
+    const lock = await client.getMailboxLock(targetMailbox);
 
     try {
-      const searchResult = await client.search({ seen: false });
-      const unreadUids = Array.isArray(searchResult) ? searchResult : [];
-      const targetUids = unreadUids.slice(-Math.min(maxResults, 8)).reverse();
+      const searchResult = await client.search({ all: true }, { uid: true });
+      const allUids = Array.isArray(searchResult) ? searchResult : [];
+      const targetUids = allUids.slice(-maxResults).reverse();
 
       const detailedMessages: DetailedGmailMessage[] = [];
 
       for (const uid of targetUids) {
         for await (const msg of client.fetch(
           String(uid),
-          { envelope: true, flags: true, source: true },
+          { envelope: true, flags: true, labels: true, source: true },
           { uid: true }
         )) {
           if (!msg.source) continue;
+          const isDraft =
+            Boolean(msg.flags?.has("\\Draft")) ||
+            Boolean(msg.labels?.has("\\Draft"));
+          const isSent = Boolean(msg.labels?.has("\\Sent"));
+          const isInbox = Boolean(msg.labels?.has("\\Inbox"));
+          if (isDraft || (isSent && !isInbox)) continue;
 
           const parsed = await simpleParser(msg.source);
           const fromName =
@@ -583,11 +834,144 @@ export type GmailImapActionType =
   | "snooze"
   | "mark_read";
 
+async function resolveUidInOpenMailbox(
+  client: ImapFlow,
+  emailUid: string,
+  subject?: string
+): Promise<string | null> {
+  if (/^\d+$/.test(emailUid)) {
+    const exact = await client
+      .search({ uid: emailUid }, { uid: true })
+      .catch(() => []);
+    if (Array.isArray(exact) && exact.length > 0) {
+      return String(exact[0]);
+    }
+  }
+  if (subject?.trim()) {
+    const bySubj = await client
+      .search({ subject: subject.trim() }, { uid: true })
+      .catch(() => []);
+    if (Array.isArray(bySubj) && bySubj.length > 0) {
+      return String(bySubj[bySubj.length - 1]);
+    }
+  }
+  return null;
+}
+
+async function moveOrCopyDeleteUid(
+  client: ImapFlow,
+  uid: string,
+  destPath: string
+): Promise<void> {
+  const moved = await client
+    .messageMove(uid, destPath, { uid: true })
+    .catch(() => false);
+  if (!moved) {
+    await client.messageCopy(uid, destPath, { uid: true }).catch(() => null);
+    await client.messageDelete(uid, { uid: true }).catch(() => null);
+  }
+}
+
+async function applyImapActionToItem(params: {
+  client: ImapFlow;
+  emailUid: string;
+  subject?: string;
+  action: GmailImapActionType;
+  spamPath: string;
+  trashPath: string;
+  allMailPath: string;
+  snoozeMailbox: string;
+}): Promise<boolean> {
+  const {
+    client,
+    emailUid,
+    subject,
+    action,
+    spamPath,
+    trashPath,
+    allMailPath,
+    snoozeMailbox,
+  } = params;
+
+  const inboxLock = await client.getMailboxLock("INBOX");
+  let resolvedInInbox: string | null = null;
+  try {
+    resolvedInInbox = await resolveUidInOpenMailbox(client, emailUid, subject);
+    if (resolvedInInbox) {
+      switch (action) {
+        case "spam":
+          await moveOrCopyDeleteUid(client, resolvedInInbox, spamPath);
+          return true;
+        case "trash":
+          await moveOrCopyDeleteUid(client, resolvedInInbox, trashPath);
+          return true;
+        case "archive":
+          // In Gmail IMAP, deleting from INBOX removes the INBOX label while keeping the message in All Mail
+          await client
+            .messageDelete(resolvedInInbox, { uid: true })
+            .catch(() => null);
+          return true;
+        case "snooze":
+          await client
+            .messageFlagsAdd(resolvedInInbox, ["\\Seen", "\\Flagged"], { uid: true })
+            .catch(() => null);
+          if (snoozeMailbox) {
+            await moveOrCopyDeleteUid(client, resolvedInInbox, snoozeMailbox);
+          } else {
+            await client
+              .messageDelete(resolvedInInbox, { uid: true })
+              .catch(() => null);
+          }
+          return true;
+        case "mark_read":
+          await client
+            .messageFlagsAdd(resolvedInInbox, ["\\Seen"], { uid: true })
+            .catch(() => null);
+          return true;
+      }
+    }
+  } finally {
+    inboxLock.release();
+  }
+
+  if (
+    !resolvedInInbox &&
+    allMailPath &&
+    (action === "spam" || action === "trash" || action === "mark_read")
+  ) {
+    const allLock = await client.getMailboxLock(allMailPath);
+    try {
+      const resolvedInAll = await resolveUidInOpenMailbox(client, emailUid, subject);
+      if (resolvedInAll) {
+        if (action === "spam") {
+          await moveOrCopyDeleteUid(client, resolvedInAll, spamPath);
+          return true;
+        }
+        if (action === "trash") {
+          await moveOrCopyDeleteUid(client, resolvedInAll, trashPath);
+          return true;
+        }
+        if (action === "mark_read") {
+          await client
+            .messageFlagsAdd(resolvedInAll, ["\\Seen"], { uid: true })
+            .catch(() => null);
+          return true;
+        }
+      }
+    } finally {
+      allLock.release();
+    }
+  }
+
+  return false;
+}
+
 /**
  * Executes an action (spam, trash/delete, archive, snooze, mark_read) directly on the Gmail server via IMAP.
  */
 export async function performGmailImapAction(params: {
   emailUid: string;
+  subject?: string;
   action: GmailImapActionType;
   snoozeLabel?: string;
 }): Promise<{
@@ -595,7 +979,7 @@ export async function performGmailImapAction(params: {
   message: string;
   error?: string;
 }> {
-  const { emailUid, action, snoozeLabel } = params;
+  const { emailUid, subject, action, snoozeLabel } = params;
 
   // Handle simulated test emails gracefully
   if (!emailUid || emailUid.startsWith("sim-email-")) {
@@ -665,131 +1049,46 @@ export async function performGmailImapAction(params: {
       ""
     );
 
-    const lock = await client.getMailboxLock("INBOX");
-    try {
-      switch (action) {
-        case "spam": {
-          const moved = await client
-            .messageMove(emailUid, spamPath, { uid: true })
-            .catch(() => false);
-          if (!moved) {
-            await client
-              .messageCopy(emailUid, spamPath, { uid: true })
-              .catch(() => null);
-            await client
-              .messageDelete(emailUid, { uid: true })
-              .catch(() => null);
-          }
-          return {
-            success: true,
-            message: "🚫 Gmail에서 스팸 처리(스팸함 이동)되었습니다.",
-          };
-        }
+    let snoozeMailbox = mailboxes.find(
+      (m) =>
+        m.path.toLowerCase().includes("snoozed") ||
+        m.path.includes("다시 알림") ||
+        m.path.includes("다시알림")
+    )?.path;
 
-        case "trash": {
-          const moved = await client
-            .messageMove(emailUid, trashPath, { uid: true })
-            .catch(() => false);
-          if (!moved) {
-            await client
-              .messageCopy(emailUid, trashPath, { uid: true })
-              .catch(() => null);
-            await client
-              .messageDelete(emailUid, { uid: true })
-              .catch(() => null);
-          }
-          return {
-            success: true,
-            message: "🗑️ Gmail에서 메일을 삭제(휴지통 이동)했습니다.",
-          };
-        }
-
-        case "archive": {
-          await client
-            .messageFlagsAdd(emailUid, ["\\Seen"], { uid: true })
-            .catch(() => null);
-
-          if (allMailPath) {
-            const moved = await client
-              .messageMove(emailUid, allMailPath, { uid: true })
-              .catch(() => false);
-            if (!moved) {
-              // In Gmail IMAP, deleting from INBOX removes the INBOX label and keeps the message archived in All Mail
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-          } else {
-            await client
-              .messageDelete(emailUid, { uid: true })
-              .catch(() => null);
-          }
-          return {
-            success: true,
-            message: "📥 Gmail에서 보관처리(받은편지함에서 보관)되었습니다.",
-          };
-        }
-
-        case "snooze": {
-          // Ensure a "Snoozed" label/mailbox exists in Gmail so the message is stored under Snoozed and removed from INBOX
-          let snoozeMailbox = mailboxes.find(
-            (m) =>
-              m.path.toLowerCase().includes("snoozed") ||
-              m.path.includes("다시 알림") ||
-              m.path.includes("다시알림")
-          )?.path;
-
-          if (!snoozeMailbox) {
-            try {
-              await client.mailboxCreate("Snoozed");
-              snoozeMailbox = "Snoozed";
-            } catch {
-              snoozeMailbox = allMailPath || "";
-            }
-          }
-
-          await client
-            .messageFlagsAdd(emailUid, ["\\Seen", "\\Flagged"], { uid: true })
-            .catch(() => null);
-
-          if (snoozeMailbox) {
-            const moved = await client
-              .messageMove(emailUid, snoozeMailbox, { uid: true })
-              .catch(() => false);
-            if (!moved) {
-              await client
-                .messageCopy(emailUid, snoozeMailbox, { uid: true })
-                .catch(() => null);
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-          } else {
-            await client
-              .messageDelete(emailUid, { uid: true })
-              .catch(() => null);
-          }
-
-          return {
-            success: true,
-            message: `⏰ Gmail에서도 다시알림(${
-              snoozeLabel || "예약됨"
-            }) 처리되어 받은편지함에서 임시 보관되었습니다.`,
-          };
-        }
-
-        case "mark_read": {
-          await client
-            .messageFlagsAdd(emailUid, ["\\Seen"], { uid: true })
-            .catch(() => null);
-          return {
-            success: true,
-            message: "✅ Gmail에서도 읽음 표시되었습니다.",
-          };
-        }
+    if (action === "snooze" && !snoozeMailbox) {
+      try {
+        await client.mailboxCreate("Snoozed");
+        snoozeMailbox = "Snoozed";
+      } catch {
+        snoozeMailbox = allMailPath || "";
       }
+    }
+
+    try {
+      await applyImapActionToItem({
+        client,
+        emailUid,
+        subject,
+        action,
+        spamPath,
+        trashPath,
+        allMailPath,
+        snoozeMailbox: snoozeMailbox || "",
+      });
+
+      const msgMap: Record<GmailImapActionType, string> = {
+        spam: "🚫 Gmail에서 스팸 처리(스팸함 이동)되었습니다.",
+        trash: "🗑️ Gmail에서 메일을 삭제(휴지통 이동)했습니다.",
+        archive: "📥 Gmail에서 보관처리(받은편지함에서 보관)되었습니다.",
+        snooze: `⏰ Gmail에서도 다시알림(${snoozeLabel || "예약됨"}) 처리되어 받은편지함에서 임시 보관되었습니다.`,
+        mark_read: "✅ Gmail에서도 읽음 표시되었습니다.",
+      };
+      return {
+        success: true,
+        message: msgMap[action],
+      };
     } finally {
-      lock.release();
       await client.logout();
     }
   } catch (err) {
@@ -874,6 +1173,7 @@ export async function unsnoozeGmailMessageToInbox(params: {
 
 export interface BatchGmailActionItem {
   emailUid: string;
+  subject?: string;
   action: GmailImapActionType;
   snoozeLabel?: string;
 }
@@ -981,102 +1281,37 @@ export async function performBatchGmailImapActions(
       }
     }
 
-    const lock = await client.getMailboxLock("INBOX");
     try {
       for (const item of realItems) {
-        const { emailUid, action } = item;
-        switch (action) {
-          case "spam": {
-            const moved = await client
-              .messageMove(emailUid, spamPath, { uid: true })
-              .catch(() => false);
-            if (!moved) {
-              await client
-                .messageCopy(emailUid, spamPath, { uid: true })
-                .catch(() => null);
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-            break;
-          }
-
-          case "trash": {
-            const moved = await client
-              .messageMove(emailUid, trashPath, { uid: true })
-              .catch(() => false);
-            if (!moved) {
-              await client
-                .messageCopy(emailUid, trashPath, { uid: true })
-                .catch(() => null);
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-            break;
-          }
-
-          case "archive": {
-            await client
-              .messageFlagsAdd(emailUid, ["\\Seen"], { uid: true })
-              .catch(() => null);
-            if (allMailPath) {
-              const moved = await client
-                .messageMove(emailUid, allMailPath, { uid: true })
-                .catch(() => false);
-              if (!moved) {
-                await client
-                  .messageDelete(emailUid, { uid: true })
-                  .catch(() => null);
-              }
-            } else {
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-            break;
-          }
-
-          case "snooze": {
-            await client
-              .messageFlagsAdd(emailUid, ["\\Seen", "\\Flagged"], { uid: true })
-              .catch(() => null);
-            if (snoozeMailbox) {
-              const moved = await client
-                .messageMove(emailUid, snoozeMailbox, { uid: true })
-                .catch(() => false);
-              if (!moved) {
-                await client
-                  .messageCopy(emailUid, snoozeMailbox, { uid: true })
-                  .catch(() => null);
-                await client
-                  .messageDelete(emailUid, { uid: true })
-                  .catch(() => null);
-              }
-            } else {
-              await client
-                .messageDelete(emailUid, { uid: true })
-                .catch(() => null);
-            }
-            break;
-          }
-
-          case "mark_read": {
-            await client
-              .messageFlagsAdd(emailUid, ["\\Seen"], { uid: true })
-              .catch(() => null);
-            break;
-          }
-        }
+        await applyImapActionToItem({
+          client,
+          emailUid: item.emailUid,
+          subject: item.subject,
+          action: item.action,
+          spamPath,
+          trashPath,
+          allMailPath,
+          snoozeMailbox: snoozeMailbox || "",
+        });
       }
+
+      const singleMsgMap: Record<GmailImapActionType, string> = {
+        spam: "🚫 Gmail에서 스팸 처리(스팸함 이동)되었습니다.",
+        trash: "🗑️ Gmail에서 메일을 삭제(휴지통 이동)했습니다.",
+        archive: "📥 Gmail에서 보관처리(받은편지함에서 보관)되었습니다.",
+        snooze: `⏰ Gmail에서 다시알림(${realItems[0]?.snoozeLabel || "예약됨"}) 처리되었습니다.`,
+        mark_read: "✅ Gmail에서도 읽음 처리되었습니다.",
+      };
 
       return {
         success: true,
         processedCount: items.length,
-        message: `⚡ 큐에 담긴 이메일 작업 총 ${items.length}건을 Gmail과 동기화하여 한 번에 모두 처리했습니다!`,
+        message:
+          items.length === 1 && realItems[0]
+            ? singleMsgMap[realItems[0].action]
+            : `⚡ 이메일 작업 ${items.length}건을 Gmail과 동기화해 처리했습니다!`,
       };
     } finally {
-      lock.release();
       await client.logout();
     }
   } catch (err) {

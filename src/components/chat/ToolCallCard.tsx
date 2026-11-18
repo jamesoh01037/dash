@@ -61,19 +61,37 @@ export default function ToolCallCard({ tool, status = "completed" }: ToolCallCar
           title: `주소록: ${getContactsActionLabel(String(tool.args.action || ""))} ${tool.args.query || tool.args.name ? `("${tool.args.query || tool.args.name}")` : ""}`,
           subtext: "Google 주소록 & 연락처 매니저",
         };
-      case "manage_google_chat":
+      case "manage_google_chat": {
+        const chatRes = tool.result as {
+          space?: { name?: string };
+          spaceName?: string;
+          messages?: Array<{ spaceName?: string }>;
+        } | undefined;
+        const resolvedSpaceLabel =
+          chatRes?.space?.name ||
+          chatRes?.spaceName ||
+          chatRes?.messages?.[0]?.spaceName ||
+          tool.args.spaceNameOrId;
         return {
           icon: MessageCircle,
           color: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-          title: `Google Chat: ${getGoogleChatActionLabel(String(tool.args.action || ""))} ${tool.args.spaceNameOrId ? `(${tool.args.spaceNameOrId})` : ""}`,
+          title: `Google Chat: ${getGoogleChatActionLabel(String(tool.args.action || ""))} ${resolvedSpaceLabel ? `(${resolvedSpaceLabel})` : ""}`,
           subtext: "Google Chat API & 스페이스 허브",
         };
+      }
       case "manage_google_drive":
         return {
           icon: HardDrive,
           color: "text-indigo-400 bg-indigo-500/10 border-indigo-500/20",
           title: `Google Drive: ${getGoogleDriveActionLabel(String(tool.args.action || ""))} ${tool.args.name || tool.args.fileIdOrName || tool.args.query ? `("${tool.args.name || tool.args.fileIdOrName || tool.args.query}")` : ""}`,
           subtext: "Google Drive API v3 & 문서 엔진",
+        };
+      case "manage_approval_flow":
+        return {
+          icon: CheckSquare,
+          color: "text-blue-400 bg-blue-500/10 border-blue-500/20",
+          title: `Approval Flow: ${String(tool.args.action || "결재 처리")}${tool.args.title ? ` ("${tool.args.title}")` : tool.args.docTypeId ? ` (${tool.args.docTypeId})` : ""}`,
+          subtext: "MCP 결재 규정 & 전자결재 엔진",
         };
       default:
         return {

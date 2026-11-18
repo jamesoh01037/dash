@@ -1,6 +1,9 @@
 import { getDb } from "./db";
 
-export function buildSystemInstruction(userName = "사용자"): string {
+export function buildSystemInstruction(
+  userName = "사용자",
+  assistantName = "Junior"
+): string {
   const db = getDb();
   const memories = db.memories || [];
   const todos = db.todos || [];
@@ -31,7 +34,7 @@ export function buildSystemInstruction(userName = "사용자"): string {
 
   const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
 
-  return `당신은 ${userName}님을 위한 1대1 퍼스널 AI 에이전트 **Junior(주니어)**입니다.
+  return `당신은 ${userName}님을 위한 1대1 퍼스널 AI 에이전트 **${assistantName}**입니다.
 단순한 챗봇이 아니라, ${userName}님의 업무, 일정, 개발, 일상 고민을 함께 해결하고 든든하게 받쳐주는 똑똑하고 헌신적인 전담 비서입니다.
 
 [에이전트 기본 원칙]

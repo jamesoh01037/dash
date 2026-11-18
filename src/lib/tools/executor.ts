@@ -5,6 +5,7 @@ import { executeManageGmail, ManageGmailArgs } from "./gmail";
 import { executeManageContacts, ManageContactsArgs } from "./contacts";
 import { executeManageGoogleChat, ManageGoogleChatArgs } from "./googleChat";
 import { executeManageGoogleDrive, ManageGoogleDriveArgs } from "./googleDrive";
+import { executeManageApprovalFlow, ManageApprovalFlowArgs } from "./approval";
 
 export interface ToolExecutionResponse {
   toolName: string;
@@ -50,6 +51,13 @@ export async function executeToolCall(
     case "manage_google_drive": {
       const driveRes = await executeManageGoogleDrive(args as unknown as ManageGoogleDriveArgs);
       return { toolName: name, result: driveRes };
+    }
+
+    case "manage_approval_flow": {
+      const approvalRes = await executeManageApprovalFlow(
+        args as unknown as ManageApprovalFlowArgs
+      );
+      return { toolName: name, result: approvalRes };
     }
 
     default:

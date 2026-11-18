@@ -11,8 +11,12 @@ import ContactsDashboard from "@/components/contacts/ContactsDashboard";
 import GoogleChatDashboard from "@/components/google-chat/GoogleChatDashboard";
 import GoogleDriveDashboard from "@/components/google-drive/GoogleDriveDashboard";
 import JuniorNotificationDashboard from "@/components/notifications/JuniorNotificationDashboard";
+import ApprovalFlowDashboard from "@/components/approval/ApprovalFlowDashboard";
 import SettingsModal from "@/components/settings/SettingsModal";
+import LoginScreen from "@/components/auth/LoginScreen";
+import OnboardingDialog from "@/components/auth/OnboardingDialog";
 import { ChatSession, JuniorNotificationItem } from "@/lib/db";
+import { AppTab, PLACEHOLDER_TAB_META, PlaceholderTab } from "@/lib/navigation";
 import {
   BellRing,
   MessageSquare,
@@ -20,25 +24,27 @@ import {
   Brain,
   Bell,
   Layers,
+  Loader2,
 } from "lucide-react";
 
 export default function Home() {
-  const [currentTab, setCurrentTab] = useState<
-    | "chat"
-    | "todos"
-    | "memory"
-    | "notifications"
-    | "gmail"
-    | "contacts"
-    | "gchat"
-    | "gdrive"
-  >("chat");
+  const [currentTab, setCurrentTab] = useState<AppTab>("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("default-session");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [model, setModel] = useState("gemini-3.8-flash");
   const [userName, setUserName] = useState("사용자");
+  const [userOrg, setUserOrg] = useState<string | undefined>();
+  const [assistantName, setAssistantName] = useState("Junior");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authEmail, setAuthEmail] = useState<string | undefined>();
+  const [googleDisplayName, setGoogleDisplayName] = useState<string | undefined>();
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [hasOAuthConfig, setHasOAuthConfig] = useState(true);
+  const [oauthClientIdPrefix, setOauthClientIdPrefix] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | undefined>();
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
@@ -58,44 +64,65 @@ export default function Home() {
   };
 
   /**
-   * 5-minute background watcher.
-   * Strictly follows user rule: if there is nothing new to notify (newCount === 0),
-   * do NOT send or display any notification at all.
+   * Auto-registers Google Drive / Gmail real-time webhooks when deployed on HTTPS.
+   * On localhost, skips 5-minute polling so the user triggers checks via "즉시 체크".
    */
-  const runSilentFiveMinuteCheck = async () => {
+  const syncWebhookRegistration = async () => {
     try {
-      const res = await fetch("/api/notifications", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "check_now" }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUnreadNotificationCount(data.unreadCount || 0);
-        if (data.newCount > 0 && Array.isArray(data.newNotifications) && data.newNotifications[0]) {
-          setLatestPopupNotification(data.newNotifications[0]);
-          setRefreshKey((prev) => prev + 1);
-        }
+      const statusRes = await fetch("/api/google/watch");
+      if (!statusRes.ok) return;
+      const { status } = await statusRes.json();
+      if (status?.isPublicHttps && (!status.driveWatchActive || (status.hasPubSubTopic && !status.gmailWatchActive))) {
+        await fetch("/api/google/watch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "register" }),
+        });
       }
     } catch {
       // silent
     }
   };
 
-  // Load Sessions and Settings on mount + responsive sidebar init + 5-minute background interval
-  useEffect(() => {
-    fetchSessions();
-    fetchSettings();
-    fetchNotificationBadge();
-    runSilentFiveMinuteCheck();
+  const checkAuthSession = async () => {
+    try {
+      const res = await fetch("/api/auth/session", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setIsAuthenticated(Boolean(data.authenticated));
+        setHasOAuthConfig(Boolean(data.hasOAuthConfig));
+        setOauthClientIdPrefix(data.oauthClientIdPrefix || null);
+        if (data.user) {
+          setAuthEmail(data.user.email);
+          setGoogleDisplayName(data.user.googleName);
+        }
+        if (data.userName) setUserName(data.userName);
+        if (data.userOrg) setUserOrg(data.userOrg);
+        if (data.assistantName) setAssistantName(data.assistantName);
+        if (data.model) setModel(data.model);
+        setNeedsOnboarding(Boolean(data.authenticated && !data.onboardingCompleted));
+        return Boolean(data.authenticated);
+      }
+    } catch {
+      // silent
+    } finally {
+      setAuthLoading(false);
+    }
+    return false;
+  };
 
+  // Load auth session first; when authenticated, load data & sync webhook state
+  useEffect(() => {
     if (typeof window !== "undefined") {
-      // Default closed on mobile/tablet (< 1024px), open on desktop (>= 1024px)
       if (window.innerWidth < 1024) {
         setIsSidebarOpen(false);
       }
 
       const params = new URLSearchParams(window.location.search);
+      const errParam = params.get("auth_error");
+      if (errParam) {
+        setAuthError(errParam);
+      }
       const tabParam = params.get("tab");
       if (tabParam === "gmail") {
         setCurrentTab("gmail");
@@ -110,11 +137,14 @@ export default function Home() {
       }
     }
 
-    const fiveMinTimer = setInterval(() => {
-      runSilentFiveMinuteCheck();
-    }, 5 * 60 * 1000);
-
-    return () => clearInterval(fiveMinTimer);
+    checkAuthSession().then((authed) => {
+      if (authed) {
+        fetchSessions();
+        fetchSettings();
+        fetchNotificationBadge();
+        syncWebhookRegistration();
+      }
+    });
   }, []);
 
   const fetchSessions = async () => {
@@ -140,9 +170,19 @@ export default function Home() {
         const data = await res.json();
         if (data.settings?.model) setModel(data.settings.model);
         if (data.settings?.userName) setUserName(data.settings.userName);
+        if (data.settings?.assistantName) setAssistantName(data.settings.assistantName);
       }
     } catch (err) {
       console.error("Failed to fetch settings:", err);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/session", { method: "DELETE" });
+    } finally {
+      setIsAuthenticated(false);
+      setAuthEmail(undefined);
     }
   };
 
@@ -187,8 +227,43 @@ export default function Home() {
     fetchNotificationBadge();
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-[100dvh] w-full bg-[#F8FAFD] flex flex-col items-center justify-center gap-3 text-[#5F6368]">
+        <Loader2 className="w-8 h-8 animate-spin text-[#1A73E8]" />
+        <p className="text-xs font-medium">Dash 연결 확인 중...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginScreen
+        hasOAuthConfig={hasOAuthConfig}
+        oauthClientIdPrefix={oauthClientIdPrefix}
+        initialError={authError}
+        onOAuthConfigured={() => checkAuthSession()}
+      />
+    );
+  }
+
   return (
     <div className="flex h-[100dvh] w-full overflow-hidden bg-[#F8FAFD] text-[#1F1F1F]">
+      {needsOnboarding && (
+        <OnboardingDialog
+          defaultUserName={
+            userName && userName !== "사용자" ? userName : googleDisplayName || ""
+          }
+          defaultAssistantName={assistantName || "Junior"}
+          userEmail={authEmail}
+          onCompleted={(newUserName, newAssistantName) => {
+            setUserName(newUserName);
+            setAssistantName(newAssistantName);
+            setNeedsOnboarding(false);
+            triggerDataRefresh();
+          }}
+        />
+      )}
       {/* Mobile / Tablet Backdrop Overlay */}
       {isSidebarOpen && (
         <div
@@ -225,7 +300,11 @@ export default function Home() {
           onDeleteSession={handleDeleteSession}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onCloseMobile={() => setIsSidebarOpen(false)}
+          onLogout={handleLogout}
           userName={userName}
+          userOrg={userOrg}
+          assistantName={assistantName}
+          authEmail={authEmail}
           model={model}
           unreadNotificationCount={unreadNotificationCount}
         />
@@ -237,8 +316,10 @@ export default function Home() {
           currentTab={currentTab}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onLogout={handleLogout}
           model={model}
           userName={userName}
+          assistantName={assistantName}
         />
 
         {/* Floating Notification Toast (ONLY appears when a new notification actually arrives) */}
@@ -287,6 +368,8 @@ export default function Home() {
               key={activeSessionId}
               sessionId={activeSessionId}
               initialPrompt={pendingChatPrompt}
+              userName={userName}
+              assistantName={assistantName}
               onClearInitialPrompt={() => setPendingChatPrompt(undefined)}
               onRefreshData={triggerDataRefresh}
             />
@@ -295,6 +378,9 @@ export default function Home() {
           {currentTab === "todos" && (
             <TodoDashboard
               key={refreshKey}
+              userName={userName}
+              assistantName={assistantName}
+              authEmail={authEmail}
               onRefreshTrigger={triggerDataRefresh}
             />
           )}
@@ -302,6 +388,7 @@ export default function Home() {
           {currentTab === "memory" && (
             <MemoryViewer
               key={refreshKey}
+              assistantName={assistantName}
               onRefreshTrigger={triggerDataRefresh}
             />
           )}
@@ -309,6 +396,7 @@ export default function Home() {
           {currentTab === "notifications" && (
             <JuniorNotificationDashboard
               key={refreshKey}
+              authEmail={authEmail}
               onRefreshTrigger={triggerDataRefresh}
               onNavigateTab={(tab) => setCurrentTab(tab)}
               onTriggerChatPrompt={(prompt) => {
@@ -361,6 +449,48 @@ export default function Home() {
               }}
             />
           )}
+
+          {(currentTab === "gw_approval" || currentTab === "gw_received_approval") && (
+            <ApprovalFlowDashboard
+              userName={userName}
+              viewMode={currentTab === "gw_received_approval" ? "received" : "approval"}
+              onTriggerChatPrompt={(prompt) => {
+                setPendingChatPrompt(prompt);
+                setCurrentTab("chat");
+              }}
+            />
+          )}
+
+          {currentTab !== "gw_approval" &&
+            currentTab !== "gw_received_approval" &&
+            currentTab in PLACEHOLDER_TAB_META && (() => {
+            const meta = PLACEHOLDER_TAB_META[currentTab as PlaceholderTab];
+            return (
+              <div className="h-full overflow-y-auto p-6 sm:p-10 flex items-center justify-center">
+                <div className="max-w-lg w-full bg-white border border-[#DDE3EA] rounded-3xl p-8 text-center shadow-sm space-y-4">
+                  <span className="inline-block px-3 py-1 rounded-full bg-[#E8F0FE] text-[#0B57D0] text-[11px] font-semibold">
+                    {meta.category}
+                  </span>
+                  <h2 className="text-xl font-bold text-[#1F1F1F]">
+                    {meta.title}
+                  </h2>
+                  <p className="text-xs font-medium text-[#5F6368]">
+                    {meta.subtitle}
+                  </p>
+                  <p className="text-xs text-[#444746] leading-relaxed bg-[#F8FAFD] border border-[#E6ECF3] rounded-2xl p-4">
+                    {meta.description}
+                  </p>
+                  <button
+                    onClick={() => setCurrentTab("chat")}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-semibold transition-colors"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    대화로 돌아가기
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </main>
 
         {/* Responsive Mobile Bottom Navigation Bar (< 1024px) */}
@@ -374,7 +504,7 @@ export default function Home() {
             }`}
           >
             <MessageSquare className="w-4 h-4" />
-            <span>작업 목록</span>
+            <span>대화</span>
           </button>
 
           <button
@@ -386,7 +516,7 @@ export default function Home() {
             }`}
           >
             <CheckSquare className="w-4 h-4" />
-            <span>확인필요</span>
+            <span>확인사항</span>
           </button>
 
           <button
@@ -398,7 +528,7 @@ export default function Home() {
             }`}
           >
             <Brain className="w-4 h-4" />
-            <span>당부사항</span>
+            <span>장기기억</span>
           </button>
 
           <button
@@ -410,7 +540,7 @@ export default function Home() {
             }`}
           >
             <Bell className="w-4 h-4" />
-            <span>보고</span>
+            <span>알림</span>
             {unreadNotificationCount > 0 && (
               <span className="absolute top-0.5 right-2 w-4 h-4 rounded-full bg-[#EA4335] text-white text-[9px] font-bold flex items-center justify-center">
                 {unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}

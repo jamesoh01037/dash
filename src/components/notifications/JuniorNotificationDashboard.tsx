@@ -24,14 +24,20 @@ import {
   Archive,
   ShieldAlert,
   AlarmClock,
+  Mail,
+  X,
 } from "lucide-react";
 import {
   JuniorNotificationItem,
   JuniorNotificationState,
   CalendarEventItem,
+  TodoItem,
 } from "@/lib/db";
+import { withGoogleAuthUser } from "@/lib/utils";
+import WorkShareDialog from "./WorkShareDialog";
 
 interface JuniorNotificationDashboardProps {
+  authEmail?: string;
   onRefreshTrigger?: () => void;
   onNavigateTab?: (
     tab:
@@ -48,12 +54,34 @@ interface JuniorNotificationDashboardProps {
 }
 
 export default function JuniorNotificationDashboard({
+  authEmail,
   onRefreshTrigger,
   onNavigateTab,
   onTriggerChatPrompt,
 }: JuniorNotificationDashboardProps) {
   const [notifications, setNotifications] = useState<JuniorNotificationItem[]>([]);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventItem[]>([]);
+  const [assistantName, setAssistantName] = useState<string>("Junior");
+  const [taskConfirmDialog, setTaskConfirmDialog] = useState<{
+    todoId: string;
+    title: string;
+    dueDate: string;
+    description: string;
+  } | null>(null);
+  const [registeringTodoId, setRegisteringTodoId] = useState<string | null>(null);
+  const [taskDialogError, setTaskDialogError] = useState<string | null>(null);
+  const [calendarConfirmDialog, setCalendarConfirmDialog] = useState<{
+    eventId: string;
+    title: string;
+    date: string;
+    startClock: string;
+    endClock: string;
+    location: string;
+    description: string;
+  } | null>(null);
+  const [registeringEventId, setRegisteringEventId] = useState<string | null>(null);
+  const [calendarDialogError, setCalendarDialogError] = useState<string | null>(null);
   const [notificationState, setNotificationState] = useState<JuniorNotificationState>({
     enabled: true,
     intervalMinutes: 5,
@@ -69,6 +97,16 @@ export default function JuniorNotificationDashboard({
   const [batchExecuting, setBatchExecuting] = useState(false);
   const [snoozeMenuOpenId, setSnoozeMenuOpenId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [webhookStatus, setWebhookStatus] = useState<{
+    mode: "webhook" | "local_manual";
+    isPublicHttps: boolean;
+    webhookUrl: string | null;
+    hasPubSubTopic: boolean;
+    driveWatchActive: boolean;
+    gmailWatchActive: boolean;
+    lastWebhookEventAt?: string;
+  } | null>(null);
+  const [webhookLoading, setWebhookLoading] = useState(false);
   const [queuedEmailActions, setQueuedEmailActions] = useState<
     Array<{
       id: string;
@@ -78,6 +116,204 @@ export default function JuniorNotificationDashboard({
       snoozeLabel?: string;
     }>
   >([]);
+
+  const [shareDialog, setShareDialog] = useState<{
+    mode: "mail" | "chat";
+    notif: JuniorNotificationItem;
+  } | null>(null);
+
+  const openTaskConfirmDialog = (
+    todo: JuniorNotificationItem["myTodosRegistered"][number],
+    notif: JuniorNotificationItem
+  ) => {
+    setTaskDialogError(null);
+    const dbTodo = todos.find((t) => t.id === todo.id);
+    const rawDue = dbTodo?.dueDate || todo.dueDate || "";
+    const hasConfirmedDue =
+      rawDue &&
+      !rawDue.includes("일정 확인 필요") &&
+      !rawDue.includes("일정 미정");
+    setTaskConfirmDialog({
+      todoId: todo.id,
+      title: dbTodo?.title || todo.title,
+      dueDate: hasConfirmedDue ? rawDue : "",
+      description:
+        dbTodo?.description ||
+        `[${assistantName} 알림 후보] '${notif.fileName}' (${notif.ownerName})에서 추출된 내 할 일`,
+    });
+  };
+
+  const handleConfirmTaskRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!taskConfirmDialog || registeringTodoId) return;
+    const { todoId, title, dueDate, description } = taskConfirmDialog;
+    setRegisteringTodoId(todoId);
+    setTaskDialogError(null);
+    try {
+      const res = await fetch("/api/todos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register_google_task",
+          id: todoId,
+          title,
+          dueDate,
+          description,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTaskDialogError(data.error || "Google Tasks 등록에 실패했습니다.");
+        return;
+      }
+      if (data.todo) {
+        setTodos((prev) => {
+          const exists = prev.some((t) => t.id === todoId);
+          return exists
+            ? prev.map((t) => (t.id === todoId ? data.todo : t))
+            : [data.todo, ...prev];
+        });
+      }
+      showToast(
+        `✅ Google Tasks '${data.listName || assistantName}' 목록에 "${title}" 할 일이 등록되었습니다.`
+      );
+      setTaskConfirmDialog(null);
+      onRefreshTrigger?.();
+    } catch {
+      setTaskDialogError("Google Tasks 등록 중 네트워크 오류가 발생했습니다.");
+    } finally {
+      setRegisteringTodoId(null);
+    }
+  };
+
+  const openCalendarConfirmDialog = (
+    ev: {
+      id: string;
+      title: string;
+      startTime: string;
+      location?: string;
+      description?: string;
+    },
+    notif: JuniorNotificationItem
+  ) => {
+    setCalendarDialogError(null);
+    const dbEv = calendarEvents.find((c) => c.id === ev.id);
+    const sourceDocName = dbEv?.sourceDocName || notif.fileName || "";
+    const cleanSourceTitle =
+      sourceDocName.replace(/^\[(Mail|Drive|메일)\]\s*/i, "").trim() || ev.title;
+    const rawStartTime = dbEv?.startTime || ev.startTime || "";
+    const rawDescription = dbEv?.description || ev.description || "";
+    const hasConfirmedTime =
+      rawStartTime &&
+      !rawStartTime.includes("일정 확인 필요") &&
+      !rawStartTime.includes("일정 미정");
+    const rawTimeSource = hasConfirmedTime
+      ? `${rawStartTime} ${ev.title}`
+      : `${ev.title} ${rawDescription}`;
+
+    const dateMatch = rawTimeSource.match(
+      /(\d{4})[-./년\s]*(\d{1,2})[-./월\s]*(\d{1,2})/
+    );
+    const parsedDate = dateMatch
+      ? `${dateMatch[1]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[3].padStart(2, "0")}`
+      : "";
+
+    const rangeMatch = rawTimeSource.match(
+      /(\d{1,2}):(\d{2})\s*[~\-–]\s*(\d{1,2}):(\d{2})/
+    );
+    const singleTimeMatch = !rangeMatch
+      ? rawTimeSource.match(/(\d{1,2}):(\d{2})/)
+      : null;
+
+    let parsedStartClock = "";
+    let parsedEndClock = "";
+    if (rangeMatch) {
+      parsedStartClock = `${rangeMatch[1].padStart(2, "0")}:${rangeMatch[2].padStart(2, "0")}`;
+      parsedEndClock = `${rangeMatch[3].padStart(2, "0")}:${rangeMatch[4].padStart(2, "0")}`;
+    } else if (singleTimeMatch) {
+      const sH = Number(singleTimeMatch[1]);
+      const sM = singleTimeMatch[2].padStart(2, "0");
+      parsedStartClock = `${String(sH).padStart(2, "0")}:${sM}`;
+      parsedEndClock = `${String(Math.min(23, sH + 1)).padStart(2, "0")}:${sM}`;
+    }
+
+    setCalendarConfirmDialog({
+      eventId: ev.id,
+      title: cleanSourceTitle,
+      date: parsedDate,
+      startClock: parsedStartClock,
+      endClock: parsedEndClock,
+      location: dbEv?.location || ev.location || "",
+      description:
+        rawDescription || (sourceDocName ? `출처: ${sourceDocName}` : ""),
+    });
+  };
+
+  const handleConfirmCalendarRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!calendarConfirmDialog || registeringEventId) return;
+    const {
+      eventId,
+      title,
+      date,
+      startClock,
+      endClock,
+      location,
+      description,
+    } = calendarConfirmDialog;
+    const combinedStartTime = [
+      date,
+      startClock && endClock
+        ? `${startClock}~${endClock}`
+        : startClock || endClock,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+
+    setRegisteringEventId(eventId);
+    setCalendarDialogError(null);
+    try {
+      const res = await fetch("/api/todos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register_google_calendar",
+          id: eventId,
+          title,
+          startTime: combinedStartTime,
+          location,
+          description,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCalendarDialogError(
+          data.error || "Google Calendar 등록에 실패했습니다."
+        );
+        return;
+      }
+      if (data.calendarEvent) {
+        setCalendarEvents((prev) => {
+          const exists = prev.some((c) => c.id === eventId);
+          return exists
+            ? prev.map((c) => (c.id === eventId ? data.calendarEvent : c))
+            : [data.calendarEvent, ...prev];
+        });
+      }
+      showToast(
+        `✅ Google Calendar '${data.listName || assistantName}' 캘린더에 "${title}" 일정이 등록되었습니다.`
+      );
+      setCalendarConfirmDialog(null);
+      onRefreshTrigger?.();
+    } catch {
+      setCalendarDialogError(
+        "Google Calendar 등록 중 네트워크 오류가 발생했습니다."
+      );
+    } finally {
+      setRegisteringEventId(null);
+    }
+  };
 
   const showToast = (msg: string) => {
     setActionToast(msg);
@@ -122,7 +358,9 @@ export default function JuniorNotificationDashboard({
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.notifications || []);
+        setTodos(data.todos || []);
         setCalendarEvents(data.calendarEvents || []);
+        if (data.assistantName) setAssistantName(data.assistantName);
         if (data.notificationState) setNotificationState(data.notificationState);
       }
     } catch {
@@ -132,9 +370,44 @@ export default function JuniorNotificationDashboard({
     }
   };
 
+  const fetchWebhookStatus = async () => {
+    try {
+      const res = await fetch("/api/google/watch");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setWebhookStatus(data.status);
+      }
+    } catch {
+      // ignore error
+    }
+  };
+
   useEffect(() => {
     fetchNotifications();
+    fetchWebhookStatus();
   }, []);
+
+  const handleToggleWebhook = async (action: "register" | "stop") => {
+    setWebhookLoading(true);
+    try {
+      const res = await fetch("/api/google/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (data.status) setWebhookStatus(data.status);
+      if (data.message) {
+        showToast(data.message);
+      } else if (action === "stop") {
+        showToast("실시간 Webhook 수신을 중지했습니다.");
+      }
+    } catch {
+      showToast("Webhook 설정 중 오류가 발생했습니다.");
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
 
   /**
    * Manual or scheduled check.
@@ -158,14 +431,25 @@ export default function JuniorNotificationDashboard({
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.notifications || []);
+        setTodos(data.todos || []);
         setCalendarEvents(data.calendarEvents || []);
+        if (data.assistantName) setAssistantName(data.assistantName);
         if (data.notificationState) setNotificationState(data.notificationState);
         if (data.newCount > 0) {
           onRefreshTrigger?.();
+          if (mode === "normal") {
+            showToast(`체크 완료: 새 알림 ${data.newCount}건이 도착했습니다.`);
+          }
+        } else if (mode === "normal") {
+          showToast("체크 완료: 새로 도착한 메일·문서가 없습니다.");
         }
+      } else if (mode === "normal") {
+        showToast("즉시 체크 중 오류가 발생했습니다.");
       }
     } catch {
-      // silent
+      if (mode === "normal") {
+        showToast("즉시 체크 중 네트워크 오류가 발생했습니다.");
+      }
     } finally {
       setChecking(false);
       setSimulating(false);
@@ -234,6 +518,46 @@ export default function JuniorNotificationDashboard({
       }
     } catch {
       // ignore
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleExecuteGmailAction = async (
+    notif: JuniorNotificationItem,
+    gmailAction: "spam" | "trash" | "archive" | "snooze" | "mark_read",
+    snoozeUntil?: string,
+    snoozeLabel?: string
+  ) => {
+    setSnoozeMenuOpenId(null);
+    setProcessingId(notif.id);
+    try {
+      const res = await fetch("/api/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "gmail_batch_action",
+          queue: [
+            {
+              id: notif.id,
+              fileName: notif.fileName,
+              gmailAction,
+              snoozeUntil,
+              snoozeLabel,
+            },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNotifications(data.notifications || []);
+        showToast(data.gmailResult?.message || "Gmail과 동기화되었습니다.");
+        onRefreshTrigger?.();
+      } else {
+        showToast("Gmail 동기화 중 오류가 발생했습니다.");
+      }
+    } catch {
+      showToast("Gmail 동기화 중 네트워크 오류가 발생했습니다.");
     } finally {
       setProcessingId(null);
     }
@@ -341,7 +665,9 @@ export default function JuniorNotificationDashboard({
   };
 
   const queuedIds = new Set(queuedEmailActions.map((q) => q.id));
-  const visibleNotifications = notifications.filter((n) => !queuedIds.has(n.id));
+  const visibleNotifications = notifications.filter(
+    (n) => !queuedIds.has(n.id) && n.gmailStatus !== "archived"
+  );
   const unreadCount = visibleNotifications.filter((n) => !n.read).length;
 
   return (
@@ -444,25 +770,23 @@ export default function JuniorNotificationDashboard({
               <BellRing className="w-4 h-4" />
             </span>
             <h3 className="text-sm font-bold text-slate-100">
-              Junior 스마트 알림 센터 (5분 주기 자동 모니터링)
+              알림
             </h3>
+            {notificationState.lastCheckedAt && (
+              <span className="text-[11px] text-slate-400">
+                최근 확인:{" "}
+                {new Date(notificationState.lastCheckedAt).toLocaleTimeString("ko-KR", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+              </span>
+            )}
             {unreadCount > 0 && (
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
                 새 알림 {unreadCount}건
               </span>
             )}
-            <span
-              className={`text-[11px] px-2 py-0.5 rounded-full border flex items-center gap-1 font-medium ${
-                notificationState.enabled
-                  ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
-                  : "bg-slate-800 text-slate-400 border-slate-700"
-              }`}
-            >
-              <Clock className="w-3 h-3" />
-              {notificationState.enabled
-                ? `${notificationState.intervalMinutes || 5}분 주기 · 무음 모드`
-                : "자동 체크 중지됨"}
-            </span>
           </div>
 
           {/* Compact Header Controls */}
@@ -477,7 +801,7 @@ export default function JuniorNotificationDashboard({
               ) : (
                 <RefreshCw className="w-3.5 h-3.5" />
               )}
-              지금 즉시 체크
+              즉시 체크
             </button>
 
             {unreadCount > 0 && (
@@ -489,23 +813,6 @@ export default function JuniorNotificationDashboard({
                 모두 읽음
               </button>
             )}
-
-            <button
-              onClick={() => setIsBannerExpanded(!isBannerExpanded)}
-              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1 transition-all"
-            >
-              {isBannerExpanded ? (
-                <>
-                  <span>접기</span>
-                  <ChevronUp className="w-3.5 h-3.5" />
-                </>
-              ) : (
-                <>
-                  <span>감시 규칙 & 설정 펼치기</span>
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </>
-              )}
-            </button>
           </div>
         </div>
 
@@ -534,8 +841,9 @@ export default function JuniorNotificationDashboard({
                   )}
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  5분마다 백그라운드에서 자동 점검하며,{" "}
-                  <strong>새로 알려드릴 내용이 있을 때만</strong> 알림을 생성합니다.
+                  {webhookStatus?.isPublicHttps
+                    ? "Google Drive & Gmail 실시간 Webhook 푸시를 통해 새 항목을 즉시 감지합니다."
+                    : "로컬(localhost) 환경에서는 상단의 [즉시 체크] 버튼으로 동기화하며, HTTPS 서버 배포 시 Google 실시간 Webhook으로 자동 전환됩니다."}
                 </p>
               </div>
 
@@ -566,12 +874,33 @@ export default function JuniorNotificationDashboard({
                   테스트: 새 메일(+첨부문서) 감지
                 </button>
 
-                <button
-                  onClick={handleToggleAutoCheck}
-                  className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all"
-                >
-                  {notificationState.enabled ? "5분 자동체크 끄기" : "5분 자동체크 켜기"}
-                </button>
+                {webhookStatus?.isPublicHttps ? (
+                  <button
+                    onClick={() =>
+                      handleToggleWebhook(
+                        webhookStatus.driveWatchActive || webhookStatus.gmailWatchActive
+                          ? "stop"
+                          : "register"
+                      )
+                    }
+                    disabled={webhookLoading}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition-all disabled:opacity-50"
+                  >
+                    {webhookLoading
+                      ? "처리 중..."
+                      : webhookStatus.driveWatchActive || webhookStatus.gmailWatchActive
+                        ? "실시간 Webhook 중지"
+                        : "실시간 Webhook 등록"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleToggleWebhook("register")}
+                    disabled={webhookLoading}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all"
+                  >
+                    Webhook 상태 확인
+                  </button>
+                )}
               </div>
             </div>
 
@@ -582,7 +911,7 @@ export default function JuniorNotificationDashboard({
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-amber-300 flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    감시 규칙 #1 — Google Drive 타인 작성 신규 문서 감지 (5분 주기)
+                    감시 규칙 #1 — Google Drive 타인 작성 신규 문서 감지 (Webhook 실시간 / 즉시 체크)
                   </span>
                   <span className="text-[11px] text-emerald-400 font-semibold">● 작동 중</span>
                 </div>
@@ -610,7 +939,7 @@ export default function JuniorNotificationDashboard({
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-rose-300 flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    감시 규칙 #2 — Gmail 신규 수신 메일 & 첨부 문서 자동 분석 (5분 주기)
+                    감시 규칙 #2 — Gmail 신규 수신 메일 & 첨부 문서 자동 분석 (Webhook 실시간 / 즉시 체크)
                   </span>
                   <span className="text-[11px] text-emerald-400 font-semibold">● 작동 중</span>
                 </div>
@@ -642,7 +971,7 @@ export default function JuniorNotificationDashboard({
       {loading ? (
         <div className="flex items-center justify-center py-16 text-slate-400 text-xs gap-2">
           <Loader2 className="w-5 h-5 animate-spin text-amber-400" />
-          <span>Junior 알림 내역을 불러오는 중입니다...</span>
+          <span>알림 내역을 불러오는 중입니다...</span>
         </div>
       ) : visibleNotifications.length === 0 ? (
         <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-12 text-center space-y-3">
@@ -655,7 +984,7 @@ export default function JuniorNotificationDashboard({
           <p className="text-xs text-slate-500 max-w-lg mx-auto leading-relaxed">
             {notifications.length > 0 && queuedEmailActions.length > 0
               ? "상단 대기열 바에서 [큐 한 번에 실행]을 눌러 Gmail에 일괄 반영하거나, 항목 옆 × 버튼으로 취소하여 다시 목록에 표시할 수 있습니다."
-              : "Junior가 5분마다 Google Drive와 Gmail을 조용히 점검하고 있으며, 새로 알려드릴 항목이 있을 때만 알림을 띄웁니다. 동작 방식을 바로 확인해 보시려면 상단의 [테스트: 외부인 Drive 문서 감지] 또는 [테스트: 새 메일(+첨부문서) 감지] 버튼을 눌러보세요!"}
+              : "상단의 [즉시 체크] 버튼을 누르거나 실시간 Webhook이 수신되면 Google Drive와 Gmail을 점검해 새 항목이 있을 때만 알림을 띄웁니다."}
           </p>
         </div>
       ) : (
@@ -685,8 +1014,8 @@ export default function JuniorNotificationDashboard({
                 }`}
               >
                 {/* Notification Header */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
-                  <div className="space-y-1">
+                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
+                  <div className="space-y-1.5 min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       {!notif.read && (
                         <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 font-extrabold text-[10px]">
@@ -728,7 +1057,9 @@ export default function JuniorNotificationDashboard({
                         </span>
                       )}
                       <h4 className="text-sm font-bold text-slate-100">
-                        {notif.title}
+                        {notif.title
+                          .replace(/^✉️?\s*새로운 메일이 도착했습니다:\s*/, "")
+                          .replace(/^'([^']+)'(\s*\(첨부문서.*\))?$/, "$1$2")}
                       </h4>
                     </div>
                     <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
@@ -749,7 +1080,7 @@ export default function JuniorNotificationDashboard({
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-1.5 shrink-0 relative">
+                  <div className="flex flex-wrap items-center gap-1.5 lg:justify-end lg:shrink-0 relative">
                     {processingId === notif.id && (
                       <span className="text-[11px] text-amber-300 flex items-center gap-1 mr-1">
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -757,36 +1088,49 @@ export default function JuniorNotificationDashboard({
                       </span>
                     )}
 
-                    {isEmailNotif && onNavigateTab && (
-                      <button
-                        onClick={() => onNavigateTab("gmail")}
-                        className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-semibold"
+                    {isEmailNotif && (
+                      <a
+                        href={(() => {
+                          const base = authEmail
+                            ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(authEmail)}`
+                            : "https://mail.google.com/mail/u/0/";
+                          const queryParts: string[] = [];
+                          if (notif.ownerEmail) {
+                            queryParts.push(`from:${notif.ownerEmail}`);
+                          } else if (notif.ownerName && notif.ownerName !== "알 수 없음") {
+                            queryParts.push(`from:${notif.ownerName}`);
+                          }
+                          if (notif.fileName) {
+                            queryParts.push(notif.fileName);
+                          }
+                          const searchQuery = queryParts.join(" ").trim();
+                          return searchQuery
+                            ? `${base}#search/${encodeURIComponent(searchQuery)}`
+                            : `${base}#inbox`;
+                        })()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-semibold flex items-center gap-1"
                       >
-                        Gmail 메일함 이동 ↗
-                      </button>
+                        Gmail에서 확인 <ExternalLink className="w-3 h-3" />
+                      </a>
                     )}
 
-                    {/* 3. 보관처리 버튼 (큐에 담기) */}
+                    {/* 3. 보관처리 버튼 (즉시 Gmail 동기화) */}
                     {isEmailNotif && (
                       <button
-                        onClick={() => handleQueueGmailAction(notif, "archive")}
-                        disabled={batchExecuting}
+                        onClick={() => handleExecuteGmailAction(notif, "archive")}
+                        disabled={batchExecuting || processingId === notif.id}
                         className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border flex items-center gap-1 transition-all disabled:opacity-50 ${
-                          queuedItem?.gmailAction === "archive"
-                            ? "bg-sky-500 text-slate-950 border-sky-400 font-extrabold shadow-md"
-                            : notif.gmailStatus === "archived"
+                          notif.gmailStatus === "archived"
                             ? "bg-sky-500/20 text-sky-200 border-sky-500/40"
                             : "bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700"
                         }`}
-                        title="보관처리 큐에 추가 (다시 누르면 취소)"
+                        title="Gmail 받은편지함에서 즉시 보관처리"
                       >
                         <Archive className="w-3.5 h-3.5" />
                         <span>
-                          {queuedItem?.gmailAction === "archive"
-                            ? "보관 대기중"
-                            : notif.gmailStatus === "archived"
-                            ? "보관됨"
-                            : "보관처리"}
+                          {notif.gmailStatus === "archived" ? "보관됨" : "보관처리"}
                         </span>
                       </button>
                     )}
@@ -831,7 +1175,7 @@ export default function JuniorNotificationDashboard({
                                 key={idx}
                                 type="button"
                                 onClick={() =>
-                                  handleQueueGmailAction(
+                                  handleExecuteGmailAction(
                                     notif,
                                     "snooze",
                                     preset.iso,
@@ -863,7 +1207,7 @@ export default function JuniorNotificationDashboard({
                     )}
                     {notif.fileWebViewLink && (
                       <a
-                        href={notif.fileWebViewLink}
+                        href={withGoogleAuthUser(notif.fileWebViewLink, authEmail)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1"
@@ -875,54 +1219,40 @@ export default function JuniorNotificationDashboard({
                       <button
                         onClick={() =>
                           isEmailNotif
-                            ? handleQueueGmailAction(notif, "mark_read")
+                            ? handleExecuteGmailAction(notif, "mark_read")
                             : handleMarkRead(notif.id)
                         }
-                        disabled={batchExecuting}
-                        className={`px-2.5 py-1.5 rounded-xl text-[11px] font-medium border transition-all disabled:opacity-50 ${
-                          queuedItem?.gmailAction === "mark_read"
-                            ? "bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold shadow-md"
-                            : "bg-slate-800 hover:bg-slate-700 text-emerald-300 border-transparent"
-                        }`}
+                        disabled={batchExecuting || processingId === notif.id}
+                        className="px-2.5 py-1.5 rounded-xl text-[11px] font-medium border bg-slate-800 hover:bg-slate-700 text-emerald-300 border-transparent transition-all disabled:opacity-50"
                       >
-                        {queuedItem?.gmailAction === "mark_read"
-                          ? "읽음 대기중"
-                          : "읽음 표시"}
+                        읽음 표시
                       </button>
                     )}
 
-                    {/* 1. 스팸 아이콘 버튼 (큐에 담기) */}
+                    {/* 1. 스팸 아이콘 버튼 (즉시 Gmail 스팸 처리) */}
                     {isEmailNotif && (
                       <button
-                        onClick={() => handleQueueGmailAction(notif, "spam")}
-                        disabled={batchExecuting}
-                        className={`p-1.5 rounded-lg border transition-all disabled:opacity-50 ${
-                          queuedItem?.gmailAction === "spam"
-                            ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md"
-                            : "text-amber-400 hover:text-amber-300 hover:bg-amber-500/15 border-transparent hover:border-amber-500/30"
-                        }`}
-                        title="스팸 처리 큐에 추가 (다시 누르면 취소)"
+                        onClick={() => handleExecuteGmailAction(notif, "spam")}
+                        disabled={batchExecuting || processingId === notif.id}
+                        className="p-1.5 rounded-lg border text-amber-400 hover:text-amber-300 hover:bg-amber-500/15 border-transparent hover:border-amber-500/30 transition-all disabled:opacity-50"
+                        title="Gmail 스팸함으로 즉시 이동"
                       >
                         <ShieldAlert className="w-4 h-4" />
                       </button>
                     )}
 
-                    {/* 2. 휴지통 아이콘 버튼 (이메일이면 큐에 담기, 드라이브 알림이면 삭제) */}
+                    {/* 2. 휴지통 아이콘 버튼 (이메일이면 즉시 Gmail 휴지통 이동, 드라이브 알림이면 삭제) */}
                     <button
                       onClick={() =>
                         isEmailNotif
-                          ? handleQueueGmailAction(notif, "trash")
+                          ? handleExecuteGmailAction(notif, "trash")
                           : handleDeleteNotification(notif.id, false)
                       }
-                      disabled={batchExecuting}
-                      className={`p-1.5 rounded-lg border transition-all disabled:opacity-50 ${
-                        queuedItem?.gmailAction === "trash"
-                          ? "bg-rose-500 text-white border-rose-400 shadow-md"
-                          : "text-slate-400 hover:text-rose-400 hover:bg-rose-500/15 border-transparent hover:border-rose-500/30"
-                      }`}
+                      disabled={batchExecuting || processingId === notif.id}
+                      className="p-1.5 rounded-lg border text-slate-400 hover:text-rose-400 hover:bg-rose-500/15 border-transparent hover:border-rose-500/30 transition-all disabled:opacity-50"
                       title={
                         isEmailNotif
-                          ? "메일 삭제 큐에 추가 (다시 누르면 취소)"
+                          ? "Gmail 휴지통으로 즉시 이동"
                           : "알림 삭제"
                       }
                     >
@@ -980,17 +1310,8 @@ export default function JuniorNotificationDashboard({
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
                         <CheckSquare className="w-3.5 h-3.5" />
-                        2. 내가 해야 할 일 (&ldquo;Junior&rdquo; 목록에 자동 등록됨:{" "}
-                        {notif.myTodosRegistered.length}건)
+                        2. 감지된 내가 해야 할 일 후보 ({notif.myTodosRegistered.length}건)
                       </span>
-                      {onNavigateTab && (
-                        <button
-                          onClick={() => onNavigateTab("todos")}
-                          className="text-[11px] text-emerald-400 hover:underline"
-                        >
-                          할 일 &ldquo;Junior&rdquo; 목록 보기 ↗
-                        </button>
-                      )}
                     </div>
 
                     {notif.myTodosRegistered.length === 0 ? (
@@ -999,26 +1320,49 @@ export default function JuniorNotificationDashboard({
                       </p>
                     ) : (
                       <ul className="space-y-1.5 text-xs">
-                        {notif.myTodosRegistered.map((todo) => (
-                          <li
-                            key={todo.id}
-                            className="p-2 rounded-lg bg-slate-950/80 border border-emerald-500/20 flex items-center justify-between gap-2"
-                          >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold shrink-0">
-                                {todo.listName || "Junior"} 목록
-                              </span>
-                              <span className="text-slate-100 font-medium truncate">
-                                ✅ {todo.title}
-                              </span>
-                            </div>
-                            {todo.dueDate && (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">
-                                기한: {todo.dueDate}
-                              </span>
-                            )}
-                          </li>
-                        ))}
+                        {notif.myTodosRegistered.map((todo) => {
+                          const dbTodo = todos.find((t) => t.id === todo.id);
+                          const isRegistered = Boolean(
+                            dbTodo?.googleTaskId || dbTodo?.googleTaskSyncedAt
+                          );
+                          return (
+                            <li
+                              key={todo.id}
+                              className="p-2.5 rounded-lg bg-slate-950/80 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span className="text-slate-100 font-medium break-words">
+                                  ✅ {todo.title}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {todo.dueDate &&
+                                  !todo.dueDate.includes("일정 확인 필요") &&
+                                  !todo.dueDate.includes("일정 미정") && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">
+                                      기한: {todo.dueDate}
+                                    </span>
+                                  )}
+                                {isRegistered ? (
+                                  <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold flex items-center gap-1">
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    등록 완료
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => openTaskConfirmDialog(todo, notif)}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                                    title={`Google Tasks '${assistantName}' 목록에 등록`}
+                                  >
+                                    <CheckSquare className="w-3 h-3" />
+                                    해야 할 일로 등록
+                                  </button>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -1028,8 +1372,7 @@ export default function JuniorNotificationDashboard({
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5" />
-                        3. 주요 일정 (&ldquo;Junior&rdquo; 목록에 자동 등록됨:{" "}
-                        {notif.calendarEventsRegistered.length}건)
+                        3. 감지된 등록해야 할 일정 후보 ({notif.calendarEventsRegistered.length}건)
                       </span>
                     </div>
 
@@ -1039,36 +1382,47 @@ export default function JuniorNotificationDashboard({
                       </p>
                     ) : (
                       <ul className="space-y-1.5 text-xs">
-                        {notif.calendarEventsRegistered.map((ev) => (
-                          <li
-                            key={ev.id}
-                            className="p-2 rounded-lg bg-slate-950/80 border border-cyan-500/20 flex items-center justify-between gap-2"
-                          >
-                            <div className="min-w-0 space-y-0.5">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-semibold shrink-0">
-                                  {ev.listName || "Junior"} 목록
-                                </span>
-                                <p className="text-slate-100 font-medium truncate">
-                                  📅 {ev.title}
+                        {notif.calendarEventsRegistered.map((ev) => {
+                          const dbEv = calendarEvents.find((c) => c.id === ev.id);
+                          const isRegistered = Boolean(dbEv?.googleCalendarSyncedAt);
+                          return (
+                            <li
+                              key={ev.id}
+                              className="p-2 rounded-lg bg-slate-950/80 border border-cyan-500/20 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-semibold shrink-0">
+                                    {ev.listName || assistantName} 목록
+                                  </span>
+                                  <p className="text-slate-100 font-medium truncate">
+                                    📅 {ev.title}
+                                  </p>
+                                </div>
+                                <p className="text-[10px] text-cyan-300">
+                                  일시: {ev.startTime}
                                 </p>
                               </div>
-                              <p className="text-[10px] text-cyan-300">
-                                일시: {ev.startTime}
-                              </p>
-                            </div>
-                            {ev.googleCalendarLink && (
-                              <a
-                                href={ev.googleCalendarLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 text-[10px] font-semibold flex items-center gap-1 shrink-0"
-                              >
-                                Google 캘린더 <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
-                            )}
-                          </li>
-                        ))}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {isRegistered ? (
+                                  <span className="px-2.5 py-1 rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold">
+                                    등록 완료
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => openCalendarConfirmDialog(ev, notif)}
+                                    className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                                    title={`Google Calendar '${assistantName}' 캘린더에 등록`}
+                                  >
+                                    <Calendar className="w-3 h-3" />
+                                    캘린더 등록
+                                  </button>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -1079,24 +1433,26 @@ export default function JuniorNotificationDashboard({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
                       <Users className="w-3.5 h-3.5" />
-                      4. 다른 사람이 해야 할 일 (형식: 제목 / 해당 일을 해야 할 사람 / 기한)
+                      4. 감지된 다른 사람이 해야 할 일 (형식: 제목 / 해당 일을 해야 할 사람 / 기한)
                     </span>
-                    {notif.otherPeopleTasks.length > 0 && onTriggerChatPrompt && (
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
-                        onClick={() => {
-                          const formattedList = notif.otherPeopleTasks
-                            .map((t) => `- ${t.title} / ${t.assignee} / ${t.deadline}`)
-                            .join("\n");
-                          onTriggerChatPrompt(
-                            `'${notif.fileName}' 문서에서 추출된 다른 사람들의 할 일 목록을 Google Chat 스페이스에 공유해 줘:\n${formattedList}`
-                          );
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1"
+                        type="button"
+                        onClick={() => setShareDialog({ mode: "mail", notif })}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-200 border border-rose-500/30 text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                      >
+                        <Mail className="w-3 h-3" />
+                        Mail로 업무공유
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShareDialog({ mode: "chat", notif })}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition-colors"
                       >
                         <MessageCircle className="w-3 h-3" />
-                        Google Chat으로 담당자 할 일 공유
+                        Chat으로 업무공유
                       </button>
-                    )}
+                    </div>
                   </div>
 
                   {notif.otherPeopleTasks.length === 0 ? (
@@ -1132,40 +1488,297 @@ export default function JuniorNotificationDashboard({
         </div>
       )}
 
-      {/* Registered Calendar Events Summary Section */}
-      {calendarEvents.length > 0 && (
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 space-y-3">
-          <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-cyan-400" />
-            Junior 알림이 &ldquo;Junior&rdquo; 목록에 자동 등록한 일정 ({calendarEvents.length}건)
-          </h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-            {calendarEvents.slice(0, 6).map((ev) => (
-              <div
-                key={ev.id}
-                className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2 text-xs"
-              >
-                <div className="min-w-0">
-                  <p className="font-semibold text-slate-100 truncate">📅 {ev.title}</p>
-                  <p className="text-[11px] text-cyan-300">일시: {ev.startTime}</p>
-                  {ev.sourceDocName && (
-                    <p className="text-[10px] text-slate-500 truncate">
-                      출처: {ev.sourceDocName}
-                    </p>
-                  )}
+      {shareDialog && (
+        <WorkShareDialog
+          mode={shareDialog.mode}
+          notification={shareDialog.notif}
+          onClose={() => setShareDialog(null)}
+          onSharedSuccess={(msg) => showToast(msg)}
+        />
+      )}
+
+      {taskConfirmDialog && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl border bg-emerald-500/15 border-emerald-500/30 text-emerald-300">
+                  <CheckSquare className="w-4 h-4" />
                 </div>
-                {ev.googleCalendarLink && (
-                  <a
-                    href={ev.googleCalendarLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-2.5 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold flex items-center gap-1 shrink-0"
-                  >
-                    캘린더 열기 <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100">
+                    Google Tasks 등록 확인
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    대상 목록: {assistantName}
+                  </p>
+                </div>
               </div>
-            ))}
+              <button
+                type="button"
+                onClick={() => setTaskConfirmDialog(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              id="notif-confirm-task-form"
+              onSubmit={handleConfirmTaskRegister}
+              className="p-5 space-y-3.5"
+            >
+              {taskDialogError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 break-words">
+                  {taskDialogError}
+                </div>
+              )}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  할 일 제목
+                </label>
+                <input
+                  type="text"
+                  value={taskConfirmDialog.title}
+                  onChange={(e) =>
+                    setTaskConfirmDialog({
+                      ...taskConfirmDialog,
+                      title: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  기한
+                </label>
+                <input
+                  type="date"
+                  value={
+                    /^\d{4}-\d{2}-\d{2}$/.test(taskConfirmDialog.dueDate)
+                      ? taskConfirmDialog.dueDate
+                      : ""
+                  }
+                  onChange={(e) =>
+                    setTaskConfirmDialog({
+                      ...taskConfirmDialog,
+                      dueDate: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  설명 / 메모
+                </label>
+                <textarea
+                  rows={3}
+                  value={taskConfirmDialog.description}
+                  onChange={(e) =>
+                    setTaskConfirmDialog({
+                      ...taskConfirmDialog,
+                      description: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 leading-relaxed focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </form>
+
+            <div className="px-5 py-3.5 border-t border-slate-800 flex items-center justify-end gap-2 bg-slate-900/90">
+              <button
+                type="button"
+                onClick={() => setTaskConfirmDialog(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                form="notif-confirm-task-form"
+                disabled={Boolean(registeringTodoId)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
+              >
+                {registeringTodoId && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                )}
+                Google Tasks에 등록
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {calendarConfirmDialog && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl border bg-cyan-500/15 border-cyan-500/30 text-cyan-300">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100">
+                    Google Calendar 등록 확인
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    대상 캘린더: {assistantName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCalendarConfirmDialog(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              id="notif-confirm-calendar-form"
+              onSubmit={handleConfirmCalendarRegister}
+              className="p-5 space-y-3.5"
+            >
+              {calendarDialogError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 break-words">
+                  {calendarDialogError}
+                </div>
+              )}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  일정 제목
+                </label>
+                <input
+                  type="text"
+                  value={calendarConfirmDialog.title}
+                  onChange={(e) =>
+                    setCalendarConfirmDialog({
+                      ...calendarConfirmDialog,
+                      title: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    날짜
+                  </label>
+                  <input
+                    type="date"
+                    value={calendarConfirmDialog.date}
+                    onChange={(e) =>
+                      setCalendarConfirmDialog({
+                        ...calendarConfirmDialog,
+                        date: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    시작 시간
+                  </label>
+                  <input
+                    type="time"
+                    value={calendarConfirmDialog.startClock}
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      let nextEnd = calendarConfirmDialog.endClock;
+                      if (nextStart && (!nextEnd || nextEnd <= nextStart)) {
+                        const [h, m] = nextStart.split(":").map(Number);
+                        const total = Math.min(23 * 60 + 59, h * 60 + m + 60);
+                        nextEnd = `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+                      }
+                      setCalendarConfirmDialog({
+                        ...calendarConfirmDialog,
+                        startClock: nextStart,
+                        endClock: nextEnd,
+                      });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    종료 시간
+                  </label>
+                  <input
+                    type="time"
+                    value={calendarConfirmDialog.endClock}
+                    onChange={(e) =>
+                      setCalendarConfirmDialog({
+                        ...calendarConfirmDialog,
+                        endClock: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  감지된 장소
+                </label>
+                <input
+                  type="text"
+                  value={calendarConfirmDialog.location}
+                  onChange={(e) =>
+                    setCalendarConfirmDialog({
+                      ...calendarConfirmDialog,
+                      location: e.target.value,
+                    })
+                  }
+                  placeholder="장소 (선택)"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  설명 / 메모
+                </label>
+                <textarea
+                  rows={3}
+                  value={calendarConfirmDialog.description}
+                  onChange={(e) =>
+                    setCalendarConfirmDialog({
+                      ...calendarConfirmDialog,
+                      description: e.target.value,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 leading-relaxed focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+            </form>
+
+            <div className="px-5 py-3.5 border-t border-slate-800 flex items-center justify-end gap-2 bg-slate-900/90">
+              <button
+                type="button"
+                onClick={() => setCalendarConfirmDialog(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                form="notif-confirm-calendar-form"
+                disabled={Boolean(registeringEventId)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-50"
+              >
+                {registeringEventId && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                )}
+                Google Calendar에 등록
+              </button>
+            </div>
           </div>
         </div>
       )}

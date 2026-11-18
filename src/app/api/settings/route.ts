@@ -17,7 +17,17 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { apiKey, model, userName, theme, googleClientId, googleClientSecret } = await req.json();
+    const {
+      apiKey,
+      model,
+      userName,
+      assistantName,
+      theme,
+      googleClientId,
+      googleClientSecret,
+      emailCheckCount,
+      emailCheckScope,
+    } = await req.json();
     const db = getDb();
 
     if (apiKey !== undefined && apiKey !== "") {
@@ -25,9 +35,19 @@ export async function POST(req: NextRequest) {
     }
     if (model) db.settings.model = model;
     if (userName) db.settings.userName = userName.trim();
+    if (assistantName) db.settings.assistantName = assistantName.trim();
     if (theme) db.settings.theme = theme;
     if (googleClientId !== undefined) db.settings.googleClientId = googleClientId.trim();
     if (googleClientSecret !== undefined) db.settings.googleClientSecret = googleClientSecret.trim();
+    if (emailCheckCount !== undefined) {
+      const parsed = Number(emailCheckCount);
+      if (Number.isFinite(parsed)) {
+        db.settings.emailCheckCount = Math.max(1, Math.min(100, Math.round(parsed)));
+      }
+    }
+    if (emailCheckScope === "all_except_spam" || emailCheckScope === "inbox_only") {
+      db.settings.emailCheckScope = emailCheckScope;
+    }
 
     saveDb(db);
     return NextResponse.json({ success: true, settings: db.settings });
