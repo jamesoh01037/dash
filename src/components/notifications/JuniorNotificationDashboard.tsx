@@ -1116,17 +1116,17 @@ export default function JuniorNotificationDashboard({
                       </a>
                     )}
 
-                    {/* 3. 보관처리 버튼 (즉시 Gmail 동기화) */}
+                    {/* 3. 보관처리 버튼 (큐에 담기) */}
                     {isEmailNotif && (
                       <button
-                        onClick={() => handleExecuteGmailAction(notif, "archive")}
+                        onClick={() => handleQueueGmailAction(notif, "archive")}
                         disabled={batchExecuting || processingId === notif.id}
                         className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border flex items-center gap-1 transition-all disabled:opacity-50 ${
                           notif.gmailStatus === "archived"
                             ? "bg-sky-500/20 text-sky-200 border-sky-500/40"
                             : "bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700"
                         }`}
-                        title="Gmail 받은편지함에서 즉시 보관처리"
+                        title="보관처리 대기열(큐)에 추가"
                       >
                         <Archive className="w-3.5 h-3.5" />
                         <span>
@@ -1175,7 +1175,7 @@ export default function JuniorNotificationDashboard({
                                 key={idx}
                                 type="button"
                                 onClick={() =>
-                                  handleExecuteGmailAction(
+                                  handleQueueGmailAction(
                                     notif,
                                     "snooze",
                                     preset.iso,
@@ -1219,7 +1219,7 @@ export default function JuniorNotificationDashboard({
                       <button
                         onClick={() =>
                           isEmailNotif
-                            ? handleExecuteGmailAction(notif, "mark_read")
+                            ? handleQueueGmailAction(notif, "mark_read")
                             : handleMarkRead(notif.id)
                         }
                         disabled={batchExecuting || processingId === notif.id}
@@ -1229,30 +1229,30 @@ export default function JuniorNotificationDashboard({
                       </button>
                     )}
 
-                    {/* 1. 스팸 아이콘 버튼 (즉시 Gmail 스팸 처리) */}
+                    {/* 1. 스팸 아이콘 버튼 (큐에 담기) */}
                     {isEmailNotif && (
                       <button
-                        onClick={() => handleExecuteGmailAction(notif, "spam")}
+                        onClick={() => handleQueueGmailAction(notif, "spam")}
                         disabled={batchExecuting || processingId === notif.id}
                         className="p-1.5 rounded-lg border text-amber-400 hover:text-amber-300 hover:bg-amber-500/15 border-transparent hover:border-amber-500/30 transition-all disabled:opacity-50"
-                        title="Gmail 스팸함으로 즉시 이동"
+                        title="스팸처리 대기열(큐)에 추가"
                       >
                         <ShieldAlert className="w-4 h-4" />
                       </button>
                     )}
 
-                    {/* 2. 휴지통 아이콘 버튼 (이메일이면 즉시 Gmail 휴지통 이동, 드라이브 알림이면 삭제) */}
+                    {/* 2. 휴지통 아이콘 버튼 (이메일이면 큐에 담기, 드라이브 알림이면 삭제) */}
                     <button
                       onClick={() =>
                         isEmailNotif
-                          ? handleExecuteGmailAction(notif, "trash")
+                          ? handleQueueGmailAction(notif, "trash")
                           : handleDeleteNotification(notif.id, false)
                       }
                       disabled={batchExecuting || processingId === notif.id}
                       className="p-1.5 rounded-lg border text-slate-400 hover:text-rose-400 hover:bg-rose-500/15 border-transparent hover:border-rose-500/30 transition-all disabled:opacity-50"
                       title={
                         isEmailNotif
-                          ? "Gmail 휴지통으로 즉시 이동"
+                          ? "삭제 대기열(큐)에 추가"
                           : "알림 삭제"
                       }
                     >
