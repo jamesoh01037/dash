@@ -71,17 +71,17 @@ export default function Sidebar({
       <div className="p-3.5 pb-2 space-y-3">
         <div className="flex items-center justify-between px-1.5">
           <div className="flex items-center gap-2.5">
-            {/* Dash AI Workspace Logo */}
+            {/* lloomm AI Workspace Logo */}
             <div className="w-9 h-9 rounded-2xl bg-white border border-[#DDE3EA] overflow-hidden flex items-center justify-center shadow-sm shrink-0">
               <img
                 src="/dash-logo.jpg"
-                alt="Dash AI Workspace"
+                alt="lloomm AI Workspace"
                 className="w-full h-full object-cover scale-110"
               />
             </div>
             <div>
               <h1 className="text-base font-bold text-[#1F1F1F] flex items-center gap-1.5 tracking-tight">
-                Dash
+                lloomm
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#D3E3FD] text-[#0B57D0] font-semibold whitespace-nowrap max-w-[140px] truncate" title={userOrg || "AI Workspace"}>
                   {userOrg || "AI Workspace"}
                 </span>

@@ -61,6 +61,60 @@ export async function POST(req: NextRequest) {
     const action = body.action || "check_now";
 
     if (action === "check_now") {
+      if (body.stream === true) {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(controller) {
+            const sendEvent = (event: string, data: unknown) => {
+              controller.enqueue(
+                encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+              );
+            };
+
+            try {
+              const checkRes = await checkJuniorNotifications({
+                simulateExternalDoc: Boolean(body.simulate),
+                simulateNewEmail: Boolean(body.simulateEmail),
+                onProgress: (phase, message) => {
+                  sendEvent("progress", { phase, message });
+                },
+                onNotificationCreated: (notification) => {
+                  sendEvent("notification", { notification });
+                },
+              });
+
+              const db = getDb();
+              const notifications = db.notifications || [];
+              const unreadCount = notifications.filter((n) => !n.read).length;
+
+              sendEvent("done", {
+                success: true,
+                newCount: checkRes.newCount,
+                notifications,
+                unreadCount,
+                todos: db.todos || [],
+                calendarEvents: db.calendarEvents || [],
+                notificationState: db.notificationState,
+              });
+            } catch (err) {
+              const msg =
+                err instanceof Error ? err.message : "즉시 체크 중 오류가 발생했습니다.";
+              sendEvent("error", { error: msg });
+            } finally {
+              controller.close();
+            }
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+          },
+        });
+      }
+
       const checkRes = await checkJuniorNotifications({
         simulateExternalDoc: Boolean(body.simulate),
         simulateNewEmail: Boolean(body.simulateEmail),
@@ -75,6 +129,7 @@ export async function POST(req: NextRequest) {
         newNotifications: checkRes.newNotifications,
         notifications,
         unreadCount,
+        todos: db.todos || [],
         calendarEvents: db.calendarEvents || [],
         notificationState: db.notificationState,
       });
@@ -199,9 +254,8 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const gmailResult = await performBatchGmailImapActions(imapBatchItems);
-
-      // Apply all queued actions to db.notifications in a single pass
+      // Apply all queued actions to db.notifications immediately,
+      // and execute Gmail IMAP sync in the background so UI returns right away.
       const removeIds = new Set<string>();
       const updateMap = new Map<
         string,
@@ -259,9 +313,19 @@ export async function POST(req: NextRequest) {
 
       saveDb(db);
 
+      if (imapBatchItems.length > 0) {
+        void performBatchGmailImapActions(imapBatchItems).catch((err) => {
+          console.error("Background performBatchGmailImapActions error:", err);
+        });
+      }
+
       return NextResponse.json({
         success: true,
-        gmailResult,
+        background: true,
+        gmailResult: {
+          success: true,
+          message: `⚡ ${queue.length}건의 일괄 처리를 즉시 반영하고, Gmail 동기화는 백그라운드에서 실행 중입니다.`,
+        },
         notifications: db.notifications,
         unreadCount: db.notifications.filter((n) => !n.read).length,
       });

@@ -42,14 +42,14 @@ export default function LoginScreen({
           <div className="w-20 h-20 rounded-2xl overflow-hidden shadow-sm border border-[#DDE3EA] bg-white flex items-center justify-center">
             <img
               src="/dash-logo.jpg"
-              alt="Dash AI Workspace Logo"
+              alt="lloomm AI Workspace Logo"
               className="w-full h-full object-cover scale-110"
             />
           </div>
 
           <div className="space-y-1.5">
             <h1 className="text-2xl sm:text-3xl font-bold text-[#1F1F1F] tracking-tight">
-              Dash
+              lloomm
             </h1>
             <p className="text-xs sm:text-sm text-[#5F6368]">
               AI Workspace

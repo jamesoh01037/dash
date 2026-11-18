@@ -90,7 +90,7 @@ export default function SettingsModal({ isOpen, onClose, onSaved }: SettingsModa
             <div className="p-2 bg-junior-500/10 text-junior-400 rounded-lg">
               <Cpu className="w-5 h-5" />
             </div>
-            <h2 className="text-base font-bold text-slate-100">Dash 환경 설정</h2>
+            <h2 className="text-base font-bold text-slate-100">lloomm 환경 설정</h2>
           </div>
           <button
             onClick={onClose}

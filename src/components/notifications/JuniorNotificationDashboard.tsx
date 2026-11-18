@@ -90,6 +90,7 @@ export default function JuniorNotificationDashboard({
   });
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [checkProgressMsg, setCheckProgressMsg] = useState<string | null>(null);
   const [simulating, setSimulating] = useState(false);
   const [simulatingEmail, setSimulatingEmail] = useState(false);
   const [isBannerExpanded, setIsBannerExpanded] = useState(false);
@@ -416,7 +417,10 @@ export default function JuniorNotificationDashboard({
   const handleCheckNow = async (mode: "normal" | "sim_drive" | "sim_email" = "normal") => {
     if (mode === "sim_drive") setSimulating(true);
     else if (mode === "sim_email") setSimulatingEmail(true);
-    else setChecking(true);
+    else {
+      setChecking(true);
+      setCheckProgressMsg("Google Drive와 Gmail을 동시에 확인하고 있습니다...");
+    }
 
     try {
       const res = await fetch("/api/notifications", {
@@ -424,27 +428,74 @@ export default function JuniorNotificationDashboard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "check_now",
+          stream: true,
           simulate: mode === "sim_drive",
           simulateEmail: mode === "sim_email",
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setNotifications(data.notifications || []);
-        setTodos(data.todos || []);
-        setCalendarEvents(data.calendarEvents || []);
-        if (data.assistantName) setAssistantName(data.assistantName);
-        if (data.notificationState) setNotificationState(data.notificationState);
-        if (data.newCount > 0) {
-          onRefreshTrigger?.();
-          if (mode === "normal") {
-            showToast(`체크 완료: 새 알림 ${data.newCount}건이 도착했습니다.`);
-          }
-        } else if (mode === "normal") {
-          showToast("체크 완료: 새로 도착한 메일·문서가 없습니다.");
+      if (!res.ok || !res.body) {
+        if (mode === "normal") {
+          showToast("즉시 체크 중 오류가 발생했습니다.");
         }
-      } else if (mode === "normal") {
-        showToast("즉시 체크 중 오류가 발생했습니다.");
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const evt of events) {
+          if (!evt.trim()) continue;
+          const lines = evt.split("\n");
+          let eventType = "message";
+          let dataStr = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.replace("event: ", "").trim();
+            } else if (line.startsWith("data: ")) {
+              dataStr = line.replace("data: ", "").trim();
+            }
+          }
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (eventType === "progress" && data.message) {
+              setCheckProgressMsg(data.message);
+            } else if (eventType === "notification" && data.notification) {
+              setNotifications((prev) => [
+                data.notification,
+                ...prev.filter((n) => n.id !== data.notification.id),
+              ]);
+            } else if (eventType === "done") {
+              setNotifications(data.notifications || []);
+              setTodos(data.todos || []);
+              setCalendarEvents(data.calendarEvents || []);
+              if (data.assistantName) setAssistantName(data.assistantName);
+              if (data.notificationState) setNotificationState(data.notificationState);
+              if (data.newCount > 0) {
+                onRefreshTrigger?.();
+                if (mode === "normal") {
+                  showToast(`체크 완료: 새 알림 ${data.newCount}건이 도착했습니다.`);
+                }
+              } else if (mode === "normal") {
+                showToast("체크 완료: 새로 도착한 메일·문서가 없습니다.");
+              }
+            } else if (eventType === "error" && mode === "normal") {
+              showToast(data.error || "즉시 체크 중 오류가 발생했습니다.");
+            }
+          } catch {
+            // ignore malformed event chunk
+          }
+        }
       }
     } catch {
       if (mode === "normal") {
@@ -452,6 +503,7 @@ export default function JuniorNotificationDashboard({
       }
     } finally {
       setChecking(false);
+      setCheckProgressMsg(null);
       setSimulating(false);
       setSimulatingEmail(false);
     }
@@ -785,6 +837,12 @@ export default function JuniorNotificationDashboard({
             {unreadCount > 0 && (
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
                 새 알림 {unreadCount}건
+              </span>
+            )}
+            {checking && checkProgressMsg && (
+              <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 font-medium flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {checkProgressMsg}
               </span>
             )}
           </div>

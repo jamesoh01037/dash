@@ -231,7 +231,7 @@ export default function Home() {
     return (
       <div className="min-h-[100dvh] w-full bg-[#F8FAFD] flex flex-col items-center justify-center gap-3 text-[#5F6368]">
         <Loader2 className="w-8 h-8 animate-spin text-[#1A73E8]" />
-        <p className="text-xs font-medium">Dash 연결 확인 중...</p>
+        <p className="text-xs font-medium">lloomm 연결 확인 중...</p>
       </div>
     );
   }

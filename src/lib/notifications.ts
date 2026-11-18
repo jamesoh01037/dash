@@ -431,6 +431,17 @@ async function registerExtractedTodosAndSchedules(params: {
   return { registeredTodos, registeredEvents };
 }
 
+async function runInBatches<T>(
+  items: T[],
+  batchSize: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  for (let i = 0; i < items.length; i += batchSize) {
+    const slice = items.slice(i, i + batchSize);
+    await Promise.all(slice.map((item) => worker(item)));
+  }
+}
+
 /**
  * Runs the 5-minute Junior Notification check across BOTH Google Drive AND Gmail:
  * 1. Google Drive: Detects new documents created by other people, summarizes them, registers my tasks into To-Dos, registers schedules into Calendar, and formats other people's tasks as "제목 / 해당 일을 해야 할 사람 / 기한".
@@ -440,6 +451,8 @@ async function registerExtractedTodosAndSchedules(params: {
 export async function checkJuniorNotifications(options?: {
   simulateExternalDoc?: boolean;
   simulateNewEmail?: boolean;
+  onNotificationCreated?: (notif: JuniorNotificationItem) => void;
+  onProgress?: (phase: string, message: string) => void;
 }): Promise<{
   success: boolean;
   newCount: number;
@@ -473,6 +486,10 @@ export async function checkJuniorNotifications(options?: {
     "";
 
   // Optional Simulation 1: External shared Google Drive document
+  let prefetchedGmailRes:
+    | Awaited<ReturnType<typeof fetchRecentGmailMessagesWithAttachments>>
+    | null = null;
+
   if (options?.simulateExternalDoc) {
     const simId = `gdrive-shared-${Date.now()}`;
     const simFile: GoogleDriveFileItem = {
@@ -505,10 +522,23 @@ export async function checkJuniorNotifications(options?: {
     db.googleDriveFiles.unshift(simFile);
     saveDb(db);
   } else if (!options?.simulateNewEmail) {
+    // 1. Fetch Google Drive & Gmail in parallel!
+    options?.onProgress?.("fetching", "Google Drive와 Gmail을 동시에 확인하고 있습니다...");
     const authStatus = getGoogleDriveAuthStatus();
-    if (authStatus.hasDriveToken) {
-      await syncGoogleDriveFiles({ pageSize: 40 });
-    }
+    const dbSettings = getDb().settings;
+    const emailCheckCount = Math.max(
+      1,
+      Math.min(100, Number(dbSettings.emailCheckCount) || 20)
+    );
+    const emailCheckScope = dbSettings.emailCheckScope || "all_except_spam";
+
+    const [, gmailRes] = await Promise.all([
+      authStatus.hasDriveToken
+        ? syncGoogleDriveFiles({ pageSize: 40 })
+        : Promise.resolve(null),
+      fetchRecentGmailMessagesWithAttachments(emailCheckCount, emailCheckScope),
+    ]);
+    prefetchedGmailRes = gmailRes;
   }
 
   const nowIso = new Date().toISOString();
@@ -542,60 +572,72 @@ export async function checkJuniorNotifications(options?: {
     return isCreatedByAnotherPerson(f, myEmail, myName);
   });
 
-  for (const file of newExternalFiles) {
-    const fileKey = file.driveFileId || file.id;
-    state.processedDriveFileIds.push(fileKey);
+  if (newExternalFiles.length > 0) {
+    options?.onProgress?.(
+      "analyzing_drive",
+      `새 Drive 문서 ${newExternalFiles.length}건을 병렬 분석 중입니다...`
+    );
+    for (const file of newExternalFiles) {
+      const fileKey = file.driveFileId || file.id;
+      if (!state.processedDriveFileIds.includes(fileKey)) {
+        state.processedDriveFileIds.push(fileKey);
+      }
+    }
     saveDb(freshDb);
 
-    const readRes = await readDriveFileContent(fileKey);
-    const contentText = readRes.content || file.contentPreview || file.description || "";
+    await runInBatches(newExternalFiles, 3, async (file) => {
+      const fileKey = file.driveFileId || file.id;
+      const readRes = await readDriveFileContent(fileKey);
+      const contentText = readRes.content || file.contentPreview || file.description || "";
 
-    const analysis = await analyzeContentWithAI({
-      sourceType: "drive",
-      sourceTitle: file.name,
-      ownerLabel: `${file.ownerName || "외부 사용자"}${
-        file.ownerEmail ? ` <${file.ownerEmail}>` : ""
-      }`,
-      content: contentText,
-      myName,
-      myEmail,
-    });
-
-    const { registeredTodos, registeredEvents } =
-      await registerExtractedTodosAndSchedules({
-        sourceLabel: `[Drive] ${file.name}`,
-        sourceDocId: fileKey,
-        ownerLabel: file.ownerName || file.ownerEmail || "외부 문서",
-        analysis,
-        nowIso,
+      const analysis = await analyzeContentWithAI({
+        sourceType: "drive",
+        sourceTitle: file.name,
+        ownerLabel: `${file.ownerName || "외부 사용자"}${
+          file.ownerEmail ? ` <${file.ownerEmail}>` : ""
+        }`,
+        content: contentText,
+        myName,
+        myEmail,
       });
 
-    const latestDb = getDb();
-    const notif: JuniorNotificationItem = {
-      id: generateId(),
-      type: "drive_new_shared_doc",
-      title: `📄 다른 사용자가 새 문서를 등록했습니다: '${file.name}'`,
-      fileId: fileKey,
-      fileName: file.name,
-      fileMimeType: file.mimeType,
-      fileWebViewLink: file.webViewLink,
-      ownerName: file.ownerName || file.ownerEmail || "외부 공유자",
-      ownerEmail: file.ownerEmail,
-      summary: analysis.summary,
-      myTodosRegistered: registeredTodos,
-      calendarEventsRegistered: registeredEvents,
-      otherPeopleTasks: analysis.otherPeopleTasks.map((o) => ({
-        title: o.title || "업무 항목",
-        assignee: o.assignee || "담당자 미지정",
-        deadline: o.deadline || "기한 미정",
-      })),
-      read: false,
-      createdAt: nowIso,
-    };
+      const { registeredTodos, registeredEvents } =
+        await registerExtractedTodosAndSchedules({
+          sourceLabel: `[Drive] ${file.name}`,
+          sourceDocId: fileKey,
+          ownerLabel: file.ownerName || file.ownerEmail || "외부 문서",
+          analysis,
+          nowIso,
+        });
 
-    latestDb.notifications.unshift(notif);
-    saveDb(latestDb);
-    createdNotifications.push(notif);
+      const latestDb = getDb();
+      const notif: JuniorNotificationItem = {
+        id: generateId(),
+        type: "drive_new_shared_doc",
+        title: `📄 다른 사용자가 새 문서를 등록했습니다: '${file.name}'`,
+        fileId: fileKey,
+        fileName: file.name,
+        fileMimeType: file.mimeType,
+        fileWebViewLink: file.webViewLink,
+        ownerName: file.ownerName || file.ownerEmail || "외부 공유자",
+        ownerEmail: file.ownerEmail,
+        summary: analysis.summary,
+        myTodosRegistered: registeredTodos,
+        calendarEventsRegistered: registeredEvents,
+        otherPeopleTasks: analysis.otherPeopleTasks.map((o) => ({
+          title: o.title || "업무 항목",
+          assignee: o.assignee || "담당자 미지정",
+          deadline: o.deadline || "기한 미정",
+        })),
+        read: false,
+        createdAt: nowIso,
+      };
+
+      latestDb.notifications.unshift(notif);
+      saveDb(latestDb);
+      createdNotifications.push(notif);
+      options?.onNotificationCreated?.(notif);
+    });
   }
 
   // =========================================================================
@@ -637,18 +679,8 @@ export async function checkJuniorNotifications(options?: {
       },
     ];
   } else {
-    const dbSettings = getDb().settings;
-    const emailCheckCount = Math.max(
-      1,
-      Math.min(100, Number(dbSettings.emailCheckCount) || 20)
-    );
-    const emailCheckScope = dbSettings.emailCheckScope || "all_except_spam";
-
-    const gmailRes = await fetchRecentGmailMessagesWithAttachments(
-      emailCheckCount,
-      emailCheckScope
-    );
-    if (gmailRes.success && gmailRes.messages.length > 0) {
+    const gmailRes = prefetchedGmailRes;
+    if (gmailRes && gmailRes.success && gmailRes.messages.length > 0) {
       const dbForEmail = getDb();
       const emailState = dbForEmail.notificationState;
       if (!emailState.processedEmailIds) emailState.processedEmailIds = [];
@@ -672,75 +704,84 @@ export async function checkJuniorNotifications(options?: {
     }
   }
 
-  for (const emailMsg of candidateEmails) {
-    const dbForLoop = getDb();
-    if (!dbForLoop.notificationState.processedEmailIds) {
-      dbForLoop.notificationState.processedEmailIds = [];
+  if (candidateEmails.length > 0) {
+    options?.onProgress?.(
+      "analyzing_email",
+      `새 메일 ${candidateEmails.length}건을 병렬 분석 중입니다...`
+    );
+    const dbForIds = getDb();
+    if (!dbForIds.notificationState.processedEmailIds) {
+      dbForIds.notificationState.processedEmailIds = [];
     }
-    if (!dbForLoop.notificationState.processedEmailIds.includes(emailMsg.uid)) {
-      dbForLoop.notificationState.processedEmailIds.push(emailMsg.uid);
-      saveDb(dbForLoop);
+    for (const emailMsg of candidateEmails) {
+      if (!dbForIds.notificationState.processedEmailIds.includes(emailMsg.uid)) {
+        dbForIds.notificationState.processedEmailIds.push(emailMsg.uid);
+      }
     }
+    saveDb(dbForIds);
 
-    const analysis = await analyzeContentWithAI({
-      sourceType: "gmail",
-      sourceTitle: emailMsg.subject,
-      ownerLabel: emailMsg.fromRaw,
-      content: emailMsg.bodyText,
-      myName,
-      myEmail,
-      attachments: emailMsg.attachments,
-    });
-
-    const { registeredTodos, registeredEvents } =
-      await registerExtractedTodosAndSchedules({
-        sourceLabel: `[Mail] ${emailMsg.subject}`,
-        sourceDocId: `gmail-${emailMsg.uid}`,
-        ownerLabel: emailMsg.fromName || emailMsg.fromEmail,
-        analysis,
-        nowIso,
+    await runInBatches(candidateEmails, 3, async (emailMsg) => {
+      const analysis = await analyzeContentWithAI({
+        sourceType: "gmail",
+        sourceTitle: emailMsg.subject,
+        ownerLabel: emailMsg.fromRaw,
+        content: emailMsg.bodyText,
+        myName,
+        myEmail,
+        attachments: emailMsg.attachments,
       });
 
-    const latestDb = getDb();
-    const emailNotif: JuniorNotificationItem = {
-      id: generateId(),
-      type: "gmail_new_message",
-      title: `${emailMsg.subject}${
-        emailMsg.attachments.length > 0
-          ? ` (첨부문서 ${emailMsg.attachments.length}건 포함)`
-          : ""
-      }`,
-      fileId: emailMsg.uid,
-      fileName: emailMsg.subject,
-      ownerName: emailMsg.fromName || emailMsg.fromEmail,
-      ownerEmail: emailMsg.fromEmail,
-      summary: analysis.summary,
-      attachmentSummaries:
-        analysis.attachmentSummaries && analysis.attachmentSummaries.length > 0
-          ? analysis.attachmentSummaries
-          : emailMsg.attachments.map((att) => ({
-              fileName: att.filename,
-              mimeType: att.contentType,
-              size: att.size,
-              summary: summarizeRawText(
-                att.extractedText,
-                `첨부 문서 '${att.filename}' 핵심 내용 요약`
-              ),
-            })),
-      myTodosRegistered: registeredTodos,
-      calendarEventsRegistered: registeredEvents,
-      otherPeopleTasks: analysis.otherPeopleTasks.map((o) => ({
-        title: o.title || "업무 항목",
-        assignee: o.assignee || "담당자 미지정",
-        deadline: o.deadline || "기한 미정",
-      })),
-      read: false,
-      createdAt: nowIso,
-    };
+      const { registeredTodos, registeredEvents } =
+        await registerExtractedTodosAndSchedules({
+          sourceLabel: `[Mail] ${emailMsg.subject}`,
+          sourceDocId: `gmail-${emailMsg.uid}`,
+          ownerLabel: emailMsg.fromName || emailMsg.fromEmail,
+          analysis,
+          nowIso,
+        });
 
-    latestDb.notifications.unshift(emailNotif);
-    saveDb(latestDb);
-    createdNotifications.push(emailNotif);
+      const latestDb = getDb();
+      const emailNotif: JuniorNotificationItem = {
+        id: generateId(),
+        type: "gmail_new_message",
+        title: `${emailMsg.subject}${
+          emailMsg.attachments.length > 0
+            ? ` (첨부문서 ${emailMsg.attachments.length}건 포함)`
+            : ""
+        }`,
+        fileId: emailMsg.uid,
+        fileName: emailMsg.subject,
+        ownerName: emailMsg.fromName || emailMsg.fromEmail,
+        ownerEmail: emailMsg.fromEmail,
+        summary: analysis.summary,
+        attachmentSummaries:
+          analysis.attachmentSummaries && analysis.attachmentSummaries.length > 0
+            ? analysis.attachmentSummaries
+            : emailMsg.attachments.map((att) => ({
+                fileName: att.filename,
+                mimeType: att.contentType,
+                size: att.size,
+                summary: summarizeRawText(
+                  att.extractedText,
+                  `첨부 문서 '${att.filename}' 핵심 내용 요약`
+                ),
+              })),
+        myTodosRegistered: registeredTodos,
+        calendarEventsRegistered: registeredEvents,
+        otherPeopleTasks: analysis.otherPeopleTasks.map((o) => ({
+          title: o.title || "업무 항목",
+          assignee: o.assignee || "담당자 미지정",
+          deadline: o.deadline || "기한 미정",
+        })),
+        read: false,
+        createdAt: nowIso,
+      };
+
+      latestDb.notifications.unshift(emailNotif);
+      saveDb(latestDb);
+      createdNotifications.push(emailNotif);
+      options?.onNotificationCreated?.(emailNotif);
+    });
   }
 
   // Wake up any snoozed email notifications whose snooze time has arrived
