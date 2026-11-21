@@ -90,7 +90,12 @@ export default function JuniorNotificationDashboard({
   });
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
-  const [checkProgressMsg, setCheckProgressMsg] = useState<string | null>(null);
+  const [checkProgress, setCheckProgress] = useState<{
+    phase: string;
+    message: string;
+    current?: number;
+    total?: number;
+  } | null>(null);
   const [simulating, setSimulating] = useState(false);
   const [simulatingEmail, setSimulatingEmail] = useState(false);
   const [isBannerExpanded, setIsBannerExpanded] = useState(false);
@@ -419,7 +424,10 @@ export default function JuniorNotificationDashboard({
     else if (mode === "sim_email") setSimulatingEmail(true);
     else {
       setChecking(true);
-      setCheckProgressMsg("Google Drive와 Gmail을 동시에 확인하고 있습니다...");
+      setCheckProgress({
+        phase: "fetching",
+        message: "Google Drive와 Gmail에서 새 항목을 동시에 조회하고 있습니다...",
+      });
     }
 
     try {
@@ -469,7 +477,12 @@ export default function JuniorNotificationDashboard({
           try {
             const data = JSON.parse(dataStr);
             if (eventType === "progress" && data.message) {
-              setCheckProgressMsg(data.message);
+              setCheckProgress({
+                phase: data.phase || "processing",
+                message: data.message,
+                current: typeof data.current === "number" ? data.current : undefined,
+                total: typeof data.total === "number" ? data.total : undefined,
+              });
             } else if (eventType === "notification" && data.notification) {
               setNotifications((prev) => [
                 data.notification,
@@ -503,7 +516,7 @@ export default function JuniorNotificationDashboard({
       }
     } finally {
       setChecking(false);
-      setCheckProgressMsg(null);
+      setCheckProgress(null);
       setSimulating(false);
       setSimulatingEmail(false);
     }
@@ -839,12 +852,6 @@ export default function JuniorNotificationDashboard({
                 새 알림 {unreadCount}건
               </span>
             )}
-            {checking && checkProgressMsg && (
-              <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 font-medium flex items-center gap-1.5">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                {checkProgressMsg}
-              </span>
-            )}
           </div>
 
           {/* Compact Header Controls */}
@@ -873,6 +880,38 @@ export default function JuniorNotificationDashboard({
             )}
           </div>
         </div>
+
+        {/* Live Progress Panel while checking */}
+        {checking && checkProgress && (
+          <div className="p-3.5 rounded-xl bg-sky-950/30 border border-sky-500/40 space-y-2">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-sky-200 font-semibold min-w-0">
+                <Loader2 className="w-4 h-4 animate-spin text-sky-400 shrink-0" />
+                <span className="truncate">{checkProgress.message}</span>
+              </div>
+              {typeof checkProgress.total === "number" && checkProgress.total > 0 && (
+                <span className="text-[11px] font-bold text-sky-300 shrink-0">
+                  {checkProgress.current ?? 0} / {checkProgress.total}건
+                </span>
+              )}
+            </div>
+            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+              {typeof checkProgress.total === "number" && checkProgress.total > 0 ? (
+                <div
+                  className="h-full bg-gradient-to-r from-sky-500 to-cyan-400 transition-all duration-300"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round(((checkProgress.current ?? 0) / checkProgress.total) * 100)
+                    )}%`,
+                  }}
+                />
+              ) : (
+                <div className="h-full w-1/2 bg-gradient-to-r from-sky-500 to-cyan-400 animate-pulse rounded-full" />
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Collapsible Details Section */}
         {isBannerExpanded && (

@@ -161,37 +161,29 @@ export default function Sidebar({
             )}
           </div>
 
-          {/* 알림 */}
+          {/* 업무처리 (메일&드라이브) */}
           <button
             onClick={() => onSelectTab("notifications")}
-            className={`w-full flex items-center justify-between px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
+            className={`w-full flex items-center justify-between px-3.5 py-2 rounded-2xl text-xs font-medium transition-all ${
               currentTab === "notifications"
                 ? "bg-[#D3E3FD] text-[#041E49] font-semibold"
                 : "text-[#444746] hover:text-[#1F1F1F] hover:bg-[#EAEFF6]"
             }`}
           >
             <div className="flex items-center gap-3">
-              <Bell className="w-4 h-4 text-[#E37400]" />
-              <span>알림</span>
+              <Bell className="w-4 h-4 text-[#E37400] shrink-0" />
+              <div className="flex flex-col items-start leading-tight">
+                <span>업무처리</span>
+                <span className="text-[10px] text-[#5F6368] font-normal">
+                  (메일&amp;드라이브)
+                </span>
+              </div>
             </div>
             {unreadNotificationCount > 0 && (
-              <span className="px-2 py-0.5 rounded-full bg-[#EA4335] text-white font-bold text-[10px]">
+              <span className="px-2 py-0.5 rounded-full bg-[#EA4335] text-white font-bold text-[10px] shrink-0">
                 {unreadNotificationCount}
               </span>
             )}
-          </button>
-
-          {/* 확인사항 */}
-          <button
-            onClick={() => onSelectTab("todos")}
-            className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
-              currentTab === "todos"
-                ? "bg-[#D3E3FD] text-[#041E49] font-semibold"
-                : "text-[#444746] hover:text-[#1F1F1F] hover:bg-[#EAEFF6]"
-            }`}
-          >
-            <CheckSquare className="w-4 h-4 text-[#188038]" />
-            <span>확인사항</span>
           </button>
 
           {/* JD&KPI */}

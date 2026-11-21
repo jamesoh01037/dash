@@ -75,8 +75,8 @@ export async function POST(req: NextRequest) {
               const checkRes = await checkJuniorNotifications({
                 simulateExternalDoc: Boolean(body.simulate),
                 simulateNewEmail: Boolean(body.simulateEmail),
-                onProgress: (phase, message) => {
-                  sendEvent("progress", { phase, message });
+                onProgress: (progress) => {
+                  sendEvent("progress", progress);
                 },
                 onNotificationCreated: (notification) => {
                   sendEvent("notification", { notification });

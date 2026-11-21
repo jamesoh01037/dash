@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
 import ChatInterface from "@/components/chat/ChatInterface";
@@ -146,6 +146,42 @@ export default function Home() {
       }
     });
   }, []);
+
+  const isBgCheckingRef = useRef(false);
+
+  // 5-minute automatic background check for Gmail & Google Drive
+  useEffect(() => {
+    if (!isAuthenticated || needsOnboarding) return;
+
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const runBackgroundCheck = async () => {
+      if (isBgCheckingRef.current) return;
+      isBgCheckingRef.current = true;
+      try {
+        const res = await fetch("/api/notifications", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "check_now" }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.unreadCount === "number") {
+            setUnreadNotificationCount(data.unreadCount);
+          }
+          if (data.newCount > 0) {
+            triggerDataRefresh();
+          }
+        }
+      } catch {
+        // silent background check error
+      } finally {
+        isBgCheckingRef.current = false;
+      }
+    };
+
+    const timer = setInterval(runBackgroundCheck, FIVE_MINUTES_MS);
+    return () => clearInterval(timer);
+  }, [isAuthenticated, needsOnboarding]);
 
   const fetchSessions = async () => {
     try {
@@ -508,15 +544,20 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => setCurrentTab("todos")}
-            className={`flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-medium transition-colors ${
-              currentTab === "todos"
+            onClick={() => setCurrentTab("notifications")}
+            className={`relative flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-medium transition-colors ${
+              currentTab === "notifications"
                 ? "text-[#0B57D0] font-semibold bg-[#D3E3FD]/60"
                 : "text-[#5F6368]"
             }`}
           >
-            <CheckSquare className="w-4 h-4" />
-            <span>확인사항</span>
+            <Bell className="w-4 h-4" />
+            <span>업무처리</span>
+            {unreadNotificationCount > 0 && (
+              <span className="absolute top-0.5 right-2 w-4 h-4 rounded-full bg-[#EA4335] text-white text-[9px] font-bold flex items-center justify-center">
+                {unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -529,23 +570,6 @@ export default function Home() {
           >
             <Brain className="w-4 h-4" />
             <span>장기기억</span>
-          </button>
-
-          <button
-            onClick={() => setCurrentTab("notifications")}
-            className={`relative flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-medium transition-colors ${
-              currentTab === "notifications"
-                ? "text-[#0B57D0] font-semibold bg-[#D3E3FD]/60"
-                : "text-[#5F6368]"
-            }`}
-          >
-            <Bell className="w-4 h-4" />
-            <span>알림</span>
-            {unreadNotificationCount > 0 && (
-              <span className="absolute top-0.5 right-2 w-4 h-4 rounded-full bg-[#EA4335] text-white text-[9px] font-bold flex items-center justify-center">
-                {unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}
-              </span>
-            )}
           </button>
 
           <button

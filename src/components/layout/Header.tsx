@@ -32,7 +32,7 @@ export default function Header({
         };
       case "todos":
         return {
-          title: "확인사항",
+          title: "후보목록 (Todo & 일정)",
           sub: `${assistantName}가 등록한 할 일 & 일정 목록 및 확인이 필요한 스마트 작업 목록`,
         };
       case "memory":
@@ -42,7 +42,7 @@ export default function Header({
         };
       case "notifications":
         return {
-          title: "알림",
+          title: "업무처리 (메일&드라이브)",
           sub: "수신 메일·첨부 문서 요약, 내 할 일·캘린더 자동 등록 및 담당자별 업무 보고",
         };
       case "gmail":

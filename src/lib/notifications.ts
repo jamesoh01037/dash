@@ -448,11 +448,18 @@ async function runInBatches<T>(
  * 2. Gmail: Detects newly arrived emails, summarizes the email AND any attached documents, registers my tasks into To-Dos, registers schedules into Calendar, and formats other people's tasks as "제목 / 해당 일을 해야 할 사람 / 기한".
  * 3. Silent Rule: If there is nothing new to notify (newCount === 0), sends NO notification at all.
  */
+export interface CheckNotificationProgress {
+  phase: string;
+  message: string;
+  current?: number;
+  total?: number;
+}
+
 export async function checkJuniorNotifications(options?: {
   simulateExternalDoc?: boolean;
   simulateNewEmail?: boolean;
   onNotificationCreated?: (notif: JuniorNotificationItem) => void;
-  onProgress?: (phase: string, message: string) => void;
+  onProgress?: (progress: CheckNotificationProgress) => void;
 }): Promise<{
   success: boolean;
   newCount: number;
@@ -523,7 +530,10 @@ export async function checkJuniorNotifications(options?: {
     saveDb(db);
   } else if (!options?.simulateNewEmail) {
     // 1. Fetch Google Drive & Gmail in parallel!
-    options?.onProgress?.("fetching", "Google Drive와 Gmail을 동시에 확인하고 있습니다...");
+    options?.onProgress?.({
+      phase: "fetching",
+      message: "Google Drive와 Gmail에서 새 항목을 동시에 조회하고 있습니다...",
+    });
     const authStatus = getGoogleDriveAuthStatus();
     const dbSettings = getDb().settings;
     const emailCheckCount = Math.max(
@@ -573,10 +583,13 @@ export async function checkJuniorNotifications(options?: {
   });
 
   if (newExternalFiles.length > 0) {
-    options?.onProgress?.(
-      "analyzing_drive",
-      `새 Drive 문서 ${newExternalFiles.length}건을 병렬 분석 중입니다...`
-    );
+    let driveCompleted = 0;
+    options?.onProgress?.({
+      phase: "analyzing_drive",
+      message: `새 Drive 문서 ${newExternalFiles.length}건을 병렬 분석 중입니다...`,
+      current: 0,
+      total: newExternalFiles.length,
+    });
     for (const file of newExternalFiles) {
       const fileKey = file.driveFileId || file.id;
       if (!state.processedDriveFileIds.includes(fileKey)) {
@@ -636,6 +649,13 @@ export async function checkJuniorNotifications(options?: {
       latestDb.notifications.unshift(notif);
       saveDb(latestDb);
       createdNotifications.push(notif);
+      driveCompleted++;
+      options?.onProgress?.({
+        phase: "analyzing_drive",
+        message: `Drive 문서 분석 중 (${driveCompleted}/${newExternalFiles.length}): ${file.name}`,
+        current: driveCompleted,
+        total: newExternalFiles.length,
+      });
       options?.onNotificationCreated?.(notif);
     });
   }
@@ -705,10 +725,13 @@ export async function checkJuniorNotifications(options?: {
   }
 
   if (candidateEmails.length > 0) {
-    options?.onProgress?.(
-      "analyzing_email",
-      `새 메일 ${candidateEmails.length}건을 병렬 분석 중입니다...`
-    );
+    let emailCompleted = 0;
+    options?.onProgress?.({
+      phase: "analyzing_email",
+      message: `새 메일 ${candidateEmails.length}건을 병렬 분석 중입니다...`,
+      current: 0,
+      total: candidateEmails.length,
+    });
     const dbForIds = getDb();
     if (!dbForIds.notificationState.processedEmailIds) {
       dbForIds.notificationState.processedEmailIds = [];
@@ -780,7 +803,19 @@ export async function checkJuniorNotifications(options?: {
       latestDb.notifications.unshift(emailNotif);
       saveDb(latestDb);
       createdNotifications.push(emailNotif);
+      emailCompleted++;
+      options?.onProgress?.({
+        phase: "analyzing_email",
+        message: `메일 AI 분석 중 (${emailCompleted}/${candidateEmails.length}): ${emailMsg.subject}`,
+        current: emailCompleted,
+        total: candidateEmails.length,
+      });
       options?.onNotificationCreated?.(emailNotif);
+    });
+  } else {
+    options?.onProgress?.({
+      phase: "finishing",
+      message: "새로 도착한 메일·문서 확인을 마무리하고 있습니다...",
     });
   }
 
